@@ -19,12 +19,11 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-import org.springframework.web.filter.CorsFilter;
-
+// import org.springframework.web.filter.CorsFilter; // Already present, no need to re-add if you have it globally configured
 
 @Configuration
-@EnableWebSecurity // Tells Spring to find and apply the web security configurations.
-@EnableMethodSecurity(prePostEnabled = true) // Enables method-level security like @PreAuthorize
+@EnableWebSecurity
+@EnableMethodSecurity(prePostEnabled = true)
 public class WebSecurityConfig {
 
     @Autowired
@@ -32,6 +31,16 @@ public class WebSecurityConfig {
 
     @Autowired
     private AuthEntryPointJwt unauthorizedHandler;
+
+    // Define these paths for Swagger/OpenAPI
+    private static final String[] SWAGGER_WHITELIST = {
+            "/v3/api-docs/**",
+            "/swagger-ui/**",
+            "/swagger-ui.html",
+            "/swagger-resources/**",
+            "/webjars/**"
+    };
+
 
     @Bean
     public AuthTokenFilter authenticationJwtTokenFilter() {
@@ -59,16 +68,16 @@ public class WebSecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http.csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.configurationSource(corsConfigurationSource())) // Apply CORS globally
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .exceptionHandling(exception -> exception.authenticationEntryPoint(unauthorizedHandler))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth ->
                         auth.requestMatchers("/api/auth/**").permitAll()
-                                .requestMatchers("/ws-quiz/**").permitAll() // Allow WebSocket connections
-                                .requestMatchers("/api/session/create").permitAll() // Allow session creation
-                                .requestMatchers("/api/session/join/**").permitAll() // Allow session joining
+                                .requestMatchers("/ws-quiz/**").permitAll()
+                                .requestMatchers("/api/session/create").permitAll()
+                                .requestMatchers("/api/session/join/**").permitAll()
                                 .requestMatchers("/error").permitAll()
-                                // Add any other public endpoints here
+                                .requestMatchers(SWAGGER_WHITELIST).permitAll() // Add Swagger whitelist here
                                 .anyRequest().authenticated()
                 );
 
@@ -81,8 +90,8 @@ public class WebSecurityConfig {
     @Bean
     public UrlBasedCorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowCredentials(true); // Important for cookies, authorization headers
-        configuration.addAllowedOriginPattern("*"); // Or specify your frontend URL: "http://localhost:3000"
+        configuration.setAllowCredentials(true);
+        configuration.addAllowedOriginPattern("*");
         configuration.addAllowedHeader("*");
         configuration.addAllowedMethod("*");
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
