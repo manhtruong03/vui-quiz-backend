@@ -8,16 +8,12 @@ import com.vuiquiz.quizwebsocket.dto.QuestionDTO;
 import com.vuiquiz.quizwebsocket.dto.QuizDTO;
 import com.vuiquiz.quizwebsocket.dto.VideoDetailDTO;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
-import com.vuiquiz.quizwebsocket.model.ImageStorage;
-import com.vuiquiz.quizwebsocket.model.Question;
-import com.vuiquiz.quizwebsocket.model.Quiz;
-import com.vuiquiz.quizwebsocket.model.UserAccount;
-import com.vuiquiz.quizwebsocket.repository.ImageStorageRepository;
-import com.vuiquiz.quizwebsocket.repository.QuestionRepository;
-import com.vuiquiz.quizwebsocket.repository.QuizRepository;
-import com.vuiquiz.quizwebsocket.repository.UserAccountRepository;
+import com.vuiquiz.quizwebsocket.model.*;
+import com.vuiquiz.quizwebsocket.repository.*;
 import com.vuiquiz.quizwebsocket.service.ImageStorageService;
 import com.vuiquiz.quizwebsocket.service.QuizService;
+import com.vuiquiz.quizwebsocket.service.QuizTagService;
+import com.vuiquiz.quizwebsocket.service.TagService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -34,13 +30,17 @@ import java.util.stream.Collectors;
 @Slf4j
 public class QuizServiceImpl implements QuizService {
 
-    // ... Inject repositories, ObjectMapper etc. ...
     private final QuizRepository quizRepository;
     private final QuestionRepository questionRepository;
     private final ImageStorageService imageStorageService;
     private final ObjectMapper objectMapper;
     private final UserAccountRepository userAccountRepository;
-    private final ImageStorageRepository imageStorageRepository; // Inject directly if needed for batch fetching
+    private final ImageStorageRepository imageStorageRepository;
+    private final TagService tagService; // Inject TagService
+    private final QuizTagService quizTagService; // Inject QuizTagService
+    private final QuizTagRepository quizTagRepository; // Inject Repositories for batch fetching
+    private final TagRepository tagRepository;         // Inject Repositories for batch fetching
+
 
     @Autowired
     public QuizServiceImpl(QuizRepository quizRepository,
@@ -48,13 +48,21 @@ public class QuizServiceImpl implements QuizService {
                            ImageStorageService imageStorageService,
                            ObjectMapper objectMapper,
                            UserAccountRepository userAccountRepository,
-                           ImageStorageRepository imageStorageRepository) { // Inject ImageStorageRepository
+                           ImageStorageRepository imageStorageRepository,
+                           TagService tagService,               // Add to constructor
+                           QuizTagService quizTagService,         // Add to constructor
+                           QuizTagRepository quizTagRepository,   // Add to constructor
+                           TagRepository tagRepository) {           // Add to constructor
         this.quizRepository = quizRepository;
         this.questionRepository = questionRepository;
         this.imageStorageService = imageStorageService;
         this.objectMapper = objectMapper;
         this.userAccountRepository = userAccountRepository;
-        this.imageStorageRepository = imageStorageRepository; // Assign
+        this.imageStorageRepository = imageStorageRepository;
+        this.tagService = tagService;                 // Assign
+        this.quizTagService = quizTagService;         // Assign
+        this.quizTagRepository = quizTagRepository;   // Assign
+        this.tagRepository = tagRepository;           // Assign
     }
 
     @Override
@@ -102,7 +110,7 @@ public class QuizServiceImpl implements QuizService {
                 question.setDescriptionText(questionDtoInternal.getDescription());
                 question.setTimeLimit(questionDtoInternal.getTime());
                 question.setPointsMultiplier(questionDtoInternal.getPointsMultiplier());
-                question.setPosition(questionDtoInternal.getPosition() !=null ? questionDtoInternal.getPosition() : questionCount);
+                question.setPosition(questionDtoInternal.getPosition() != null ? questionDtoInternal.getPosition() : questionCount);
 
                 if (questionDtoInternal.getImage() != null && !questionDtoInternal.getImage().trim().isEmpty()) {
                     ImageStorage questionImage = imageStorageService.findOrCreateByFilePath(questionDtoInternal.getImage(), creatorId);
@@ -138,6 +146,21 @@ public class QuizServiceImpl implements QuizService {
             }
         }
 
+        // --- NEW: Handle Tags ---
+        if (!CollectionUtils.isEmpty(quizDto.getTags())) {
+            for (String tagName : quizDto.getTags()) {
+                try {
+                    Tag tag = tagService.findOrCreateTagByName(tagName);
+                    quizTagService.addTagToQuiz(persistedQuizId, tag.getTagId());
+                } catch (IllegalArgumentException e) {
+                    log.warn("Skipping invalid tag name '{}' for quiz '{}': {}", tagName, quizDto.getTitle(), e.getMessage());
+                } catch (ResourceNotFoundException e) {
+                    log.error("Error associating tag '{}' for quiz '{}', tag/quiz likely not found: {}", tagName, quizDto.getTitle(), e.getMessage());
+                    // Or rethrow / handle differently
+                }
+            }
+        }
+
         savedQuiz.setQuestionCount(questionCount);
         Quiz finalSavedQuiz = quizRepository.save(savedQuiz);
 
@@ -145,13 +168,13 @@ public class QuizServiceImpl implements QuizService {
                 .map(UserAccount::getUsername)
                 .orElse(null);
 
-        QuizDTO responseDto = mapQuizEntityToDto(finalSavedQuiz, creatorUsername, false); // Don't load questions for create response
+        QuizDTO responseDto = mapQuizEntityToDto(finalSavedQuiz, creatorUsername, false, Collections.emptyList()); // Pass empty tags list for create response
         return responseDto;
     }
 
     @Override
     @Transactional(readOnly = true)
-    public QuizDTO getQuizDetailsById(UUID quizId) { // Renamed method
+    public QuizDTO getQuizDetailsById(UUID quizId) {
         Quiz quiz = quizRepository.findById(quizId)
                 .orElseThrow(() -> new ResourceNotFoundException("Quiz", "id", quizId));
 
@@ -159,54 +182,74 @@ public class QuizServiceImpl implements QuizService {
                 .map(UserAccount::getUsername)
                 .orElse(null);
 
-        return mapQuizEntityToDto(quiz, creatorUsername, true); // Load questions = true
+        // Fetch Tags for this quiz
+        List<String> tagNames = getTagNamesForQuiz(quizId);
+
+        return mapQuizEntityToDto(quiz, creatorUsername, true, tagNames); // Pass tag names, load questions = true
+    }
+
+    // Helper to get tag names
+    private List<String> getTagNamesForQuiz(UUID quizId) {
+        List<QuizTag> quizTags = quizTagRepository.findByQuizId(quizId);
+        if (quizTags.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Set<UUID> tagIds = quizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
+        List<Tag> tags = tagRepository.findAllById(tagIds);
+        return tags.stream().map(Tag::getName).collect(Collectors.toList());
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<QuizDTO> getPublicPublishedQuizzes(Pageable pageable) {
-        // 1. Fetch the page of Quiz entities
         Page<Quiz> quizPage = quizRepository.findByVisibilityAndStatus(1, "PUBLISHED", pageable);
-
         List<Quiz> quizzes = quizPage.getContent();
         if (quizzes.isEmpty()) {
             return new PageImpl<>(Collections.emptyList(), pageable, quizPage.getTotalElements());
         }
 
-        // 2. Efficiently fetch related data for all quizzes in the list
-        // Fetch Creator Usernames
+        // Efficiently fetch related data
         Set<UUID> creatorIds = quizzes.stream().map(Quiz::getCreatorId).collect(Collectors.toSet());
         Map<UUID, String> creatorUsernameMap = userAccountRepository.findAllById(creatorIds).stream()
                 .collect(Collectors.toMap(UserAccount::getUserId, UserAccount::getUsername));
 
-        // Fetch Cover Image FilePaths
-        Set<UUID> coverImageIds = quizzes.stream()
-                .map(Quiz::getCoverImageId)
-                .filter(Objects::nonNull) // Filter out null IDs
-                .collect(Collectors.toSet());
+        Set<UUID> coverImageIds = quizzes.stream().map(Quiz::getCoverImageId).filter(id -> id != null).collect(Collectors.toSet());
         Map<UUID, String> coverImageUrlMap = imageStorageRepository.findAllById(coverImageIds).stream()
                 .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
 
-        // 3. Map Quiz entities to QuizDTOs using the pre-fetched data
+        // Fetch Tags efficiently for all quizzes in the page
+        List<UUID> quizIds = quizzes.stream().map(Quiz::getQuizId).collect(Collectors.toList());
+        List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds); // Need this method in QuizTagRepository
+        Set<UUID> allTagIds = allQuizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
+        Map<UUID, String> tagNameMap = tagRepository.findAllById(allTagIds).stream()
+                .collect(Collectors.toMap(Tag::getTagId, Tag::getName));
+
+        // Group tag names by quizId
+        Map<UUID, List<String>> tagsByQuizIdMap = allQuizTags.stream()
+                .collect(Collectors.groupingBy(
+                        QuizTag::getQuizId,
+                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())
+                ));
+
+
         List<QuizDTO> quizDTOs = quizzes.stream()
                 .map(quiz -> {
                     String creatorUsername = creatorUsernameMap.get(quiz.getCreatorId());
                     String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
-                    // Use a specialized mapper or adapt the existing one for list view (no questions)
-                    return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl);
+                    List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
+                    // Use a specialized mapper or adapt the existing one for list view
+                    return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl, tagNames); // Pass tags
                 })
                 .collect(Collectors.toList());
 
-        // 4. Return the Page<QuizDTO>
         return new PageImpl<>(quizDTOs, pageable, quizPage.getTotalElements());
     }
 
     // Mapper optimized for list view (no lobby video deserialization, no questions)
-    private QuizDTO mapQuizEntityToListDTO(Quiz quiz, String creatorUsername, String coverImageUrl) {
+    private QuizDTO mapQuizEntityToListDTO(Quiz quiz, String creatorUsername, String coverImageUrl, List<String> tagNames) {
         if (quiz == null) {
             return null;
         }
-        // Basic metadata mapping
         return QuizDTO.builder()
                 .quizId(quiz.getQuizId())
                 .creatorId(quiz.getCreatorId())
@@ -217,20 +260,17 @@ public class QuizServiceImpl implements QuizService {
                 .status(quiz.getStatus())
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
-                .cover(coverImageUrl) // Use the pre-fetched cover image URL
+                .cover(coverImageUrl)
+                .tags(tagNames) // Set tags here
                 .created(quiz.getCreatedAt() != null ? quiz.getCreatedAt().toInstant().toEpochMilli() : null)
                 .modified(quiz.getModifiedAt() != null ? quiz.getModifiedAt().toInstant().toEpochMilli() : null)
-                .questions(Collections.emptyList()) // Ensure questions are not included
-                .isValid(true) // Assuming valid if retrieved
-                // Include other relevant fields like playCount, favoriteCount if needed for list view
-                // .playCount(quiz.getPlayCount())
-                // .favoriteCount(quiz.getFavoriteCount())
-                // Omit lobbyVideo for list performance if not needed
+                .questions(Collections.emptyList())
+                .isValid(true)
                 .build();
     }
 
     // Main mapper method, now with a flag to load questions
-    private QuizDTO mapQuizEntityToDto(Quiz quiz, String creatorUsername, boolean loadQuestions) {
+    private QuizDTO mapQuizEntityToDto(Quiz quiz, String creatorUsername, boolean loadQuestions, List<String> tagNames) {
         if (quiz == null) {
             return null;
         }
@@ -245,36 +285,31 @@ public class QuizServiceImpl implements QuizService {
                 .status(quiz.getStatus())
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
-                .playAsGuest(null) // Mock data field, not in entity
-                .type(quiz.getQuizTypeInfo()) // Mock data field, mapped from quizTypeInfo
-                .isValid(true); // Assuming valid if successfully retrieved
+                .playAsGuest(null)
+                .type(quiz.getQuizTypeInfo())
+                .isValid(true)
+                .tags(tagNames); // Set the tags
 
+        // ... (mapping for cover, lobby video, created, modified remains the same) ...
         if (quiz.getCoverImageId() != null) {
             imageStorageService.getImageStorageById(quiz.getCoverImageId())
                     .ifPresent(img -> builder.cover(img.getFilePath()));
         }
-
         if (quiz.getLobbyVideoJson() != null && !quiz.getLobbyVideoJson().isEmpty()) {
             try {
-                VideoDetailDTO lobbyVideoDto = objectMapper.readValue(quiz.getLobbyVideoJson(), VideoDetailDTO.class);
-                builder.lobbyVideo(lobbyVideoDto);
+                builder.lobbyVideo(objectMapper.readValue(quiz.getLobbyVideoJson(), VideoDetailDTO.class));
             } catch (JsonProcessingException e) {
-                log.error("Error deserializing lobby video JSON to DTO for quizId '{}': {}", quiz.getQuizId(), e.getMessage());
+                log.error("Error deserializing lobby video: {}", e.getMessage());
             }
         }
-
-        if (quiz.getCreatedAt() != null) {
-            builder.created(quiz.getCreatedAt().toInstant().toEpochMilli());
-        }
-        if (quiz.getModifiedAt() != null) {
-            builder.modified(quiz.getModifiedAt().toInstant().toEpochMilli());
-        }
+        if (quiz.getCreatedAt() != null) builder.created(quiz.getCreatedAt().toInstant().toEpochMilli());
+        if (quiz.getModifiedAt() != null) builder.modified(quiz.getModifiedAt().toInstant().toEpochMilli());
 
         if (loadQuestions) {
             List<Question> questions = questionRepository.findByQuizIdOrderByPositionAsc(quiz.getQuizId());
             if (!CollectionUtils.isEmpty(questions)) {
                 builder.questions(questions.stream()
-                        .map(this::mapQuestionEntityToDto) // Use new helper
+                        .map(this::mapQuestionEntityToDto) // Use helper
                         .collect(Collectors.toList()));
             } else {
                 builder.questions(Collections.emptyList());
@@ -318,7 +353,8 @@ public class QuizServiceImpl implements QuizService {
 
         if (question.getAnswerDataJson() != null && !question.getAnswerDataJson().isEmpty()) {
             try {
-                List<ChoiceDTO> choices = objectMapper.readValue(question.getAnswerDataJson(), new TypeReference<List<ChoiceDTO>>() {});
+                List<ChoiceDTO> choices = objectMapper.readValue(question.getAnswerDataJson(), new TypeReference<List<ChoiceDTO>>() {
+                });
                 builder.choices(choices);
             } catch (JsonProcessingException e) {
                 log.error("Error deserializing question choices JSON to DTO for questionId '{}': {}", question.getQuestionId(), e.getMessage());
@@ -393,13 +429,13 @@ public class QuizServiceImpl implements QuizService {
     @Transactional
     public void deleteQuiz(UUID quizId) {
         if (quizRepository.existsById(quizId)) {
-            // Important: Delete questions first due to manual FK management
-            questionRepository.deleteByQuizId(quizId); // Ensure this method exists and works
+            questionRepository.deleteByQuizId(quizId);
+            quizTagRepository.deleteByQuizId(quizId);
             quizRepository.deleteById(quizId);
         } else {
             throw new ResourceNotFoundException("Quiz", "id", quizId);
         }
-    }
+    } // Added deleteByQuizId for QuizTag
 
     @Override
     @Transactional

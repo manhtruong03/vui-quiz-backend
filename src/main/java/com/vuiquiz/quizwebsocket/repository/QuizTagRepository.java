@@ -14,4 +14,10 @@ public interface QuizTagRepository extends JpaRepository<QuizTag, UUID> {
     List<QuizTag> findByTagId(UUID tagId);
     Optional<QuizTag> findByQuizIdAndTagId(UUID quizId, UUID tagId);
     void deleteByQuizIdAndTagId(UUID quizId, UUID tagId);
+
+    // Add this for efficient batch fetching
+    List<QuizTag> findByQuizIdIn(List<UUID> quizIds);
+
+    // Add this for deleting tags when a quiz is deleted
+    void deleteByQuizId(UUID quizId);
 }

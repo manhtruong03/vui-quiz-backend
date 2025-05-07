@@ -85,4 +85,8 @@ public class QuizDTO {
 
     @Schema(description = "Last modified timestamp (Unix millis, populated by backend for responses)", example = "1745286000000")
     private Long modified;
+
+    @Schema(description = "List of tag names associated with the quiz. Provided during creation, included in responses.",
+            example = "[\"Science\", \"2019\", \"Trivia\"]")
+    private List<String> tags;
 }
