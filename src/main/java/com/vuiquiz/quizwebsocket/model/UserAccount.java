@@ -1,7 +1,7 @@
 package com.vuiquiz.quizwebsocket.model;
 
 import lombok.AllArgsConstructor;
-import lombok.Builder;
+import lombok.Builder; // Ensure this import is present
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.GenericGenerator;
@@ -15,7 +15,7 @@ import java.util.UUID;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
+@Builder // Existing annotation
 @Entity
 @Table(name = "user_account", uniqueConstraints = {
         @UniqueConstraint(columnNames = {"username", "email"}, name = "AK_user_account_username_email")
@@ -39,13 +39,15 @@ public class UserAccount {
     @Column(name = "email", unique = true, length = 200)
     private String email;
 
-    @Column(name = "account_password", nullable = false, length = 30)
+    @Column(name = "account_password", nullable = false, length = 72) // Length was already updated, good.
     private String accountPassword;
 
     @Column(name = "role", nullable = false, length = 50)
+    @Builder.Default // Add this annotation
     private String role = "TEACHER";
 
     @Column(name = "storage_used", nullable = false)
+    @Builder.Default // Add this annotation
     private Long storageUsed = 0L;
 
     @Column(name = "created_at", nullable = false, updatable = false, columnDefinition = "TIMESTAMP WITH TIME ZONE")
@@ -61,6 +63,8 @@ public class UserAccount {
     protected void onCreate() {
         createdAt = OffsetDateTime.now();
         updatedAt = OffsetDateTime.now();
+        // storageUsed will be initialized by @Builder.Default or if explicitly set
+        // role will be initialized by @Builder.Default or if explicitly set
     }
 
     @PreUpdate
