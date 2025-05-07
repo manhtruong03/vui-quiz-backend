@@ -14,6 +14,7 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -66,11 +67,31 @@ public class QuizController {
         return ResponseEntity.ok(quizDTO);
     }
 
+    @GetMapping("/my-quizzes")
+    @PreAuthorize("isAuthenticated()") // User must be logged in
+    @Operation(summary = "Get quizzes created by the current user",
+            description = "Retrieves a paginated list of quizzes created by the currently authenticated user.")
+    @ApiResponse(responseCode = "200", description = "List of user's quizzes retrieved successfully",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Page.class)))
+    @ApiResponse(responseCode = "401", description = "Unauthorized - User not logged in")
+    @SecurityRequirement(name = "bearerAuth") // Indicates JWT is needed
+    public ResponseEntity<Page<QuizDTO>> getCurrentUserQuizzes(
+            @Parameter(description = "Pagination and sorting parameters (e.g., page=0&size=10&sort=modifiedAt,desc)")
+            @PageableDefault(
+                    size = 10,
+                    sort = "modifiedAt", // Specify property name here
+                    direction = Sort.Direction.DESC // Specify direction separately
+            ) Pageable pageable) { // Default sort by modified date
+        Page<QuizDTO> userQuizzes = quizService.getQuizzesByCurrentUser(pageable);
+        return ResponseEntity.ok(userQuizzes);
+    }
+
     @GetMapping("/public")
     @Operation(summary = "Get public and published quizzes",
             description = "Retrieves a paginated list of quizzes that are marked as public (visibility=1) and published (status='PUBLISHED').")
     @ApiResponse(responseCode = "200", description = "List of public quizzes retrieved successfully",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Page.class))) // Response is a Page
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Page.class)))
+    // Response is a Page
     public ResponseEntity<Page<QuizDTO>> getPublicPublishedQuizzes(
             @Parameter(description = "Pagination and sorting parameters (e.g., page=0&size=10&sort=createdAt,desc)")
             @PageableDefault(size = 10, sort = "createdAt") Pageable pageable) { // Inject Pageable

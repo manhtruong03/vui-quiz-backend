@@ -13,6 +13,7 @@ public interface QuizService {
 
     // New method for fetching public quizzes
     Page<QuizDTO> getPublicPublishedQuizzes(Pageable pageable);
+    Page<QuizDTO> getQuizzesByCurrentUser(Pageable pageable);
 
     // Existing methods
     Optional<Quiz> getQuizById(UUID quizId);

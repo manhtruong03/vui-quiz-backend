@@ -10,6 +10,7 @@ import com.vuiquiz.quizwebsocket.dto.VideoDetailDTO;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
 import com.vuiquiz.quizwebsocket.model.*;
 import com.vuiquiz.quizwebsocket.repository.*;
+import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
 import com.vuiquiz.quizwebsocket.service.ImageStorageService;
 import com.vuiquiz.quizwebsocket.service.QuizService;
 import com.vuiquiz.quizwebsocket.service.QuizTagService;
@@ -19,6 +20,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -197,6 +200,66 @@ public class QuizServiceImpl implements QuizService {
         Set<UUID> tagIds = quizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
         List<Tag> tags = tagRepository.findAllById(tagIds);
         return tags.stream().map(Tag::getName).collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuizDTO> getQuizzesByCurrentUser(Pageable pageable) {
+        // 1. Get current user's ID
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated() || !(authentication.getPrincipal() instanceof UserDetailsImpl)) {
+            // Handle cases where user is not authenticated appropriately
+            // Option 1: Throw exception
+            // throw new IllegalStateException("User must be authenticated to fetch their quizzes.");
+            // Option 2: Return empty page
+            return new PageImpl<>(Collections.emptyList(), pageable, 0);
+        }
+        UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+        UUID currentUserId = userDetails.getId();
+        String currentUsername = userDetails.getUsername(); // Get username directly
+
+        // 2. Fetch the page of Quiz entities for this user
+        Page<Quiz> quizPage = quizRepository.findByCreatorId(currentUserId, pageable);
+
+        List<Quiz> quizzes = quizPage.getContent();
+        if (quizzes.isEmpty()) {
+            return new PageImpl<>(Collections.emptyList(), pageable, quizPage.getTotalElements());
+        }
+
+        // 3. Efficiently fetch related data (only need covers and tags, username is known)
+        // Fetch Cover Image FilePaths
+        Set<UUID> coverImageIds = quizzes.stream()
+                .map(Quiz::getCoverImageId)
+                .filter(id -> id != null)
+                .collect(Collectors.toSet());
+        Map<UUID, String> coverImageUrlMap = imageStorageRepository.findAllById(coverImageIds).stream()
+                .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
+
+        // Fetch Tags
+        List<UUID> quizIds = quizzes.stream().map(Quiz::getQuizId).collect(Collectors.toList());
+        List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds);
+        Set<UUID> allTagIds = allQuizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
+        Map<UUID, String> tagNameMap = tagRepository.findAllById(allTagIds).stream()
+                .collect(Collectors.toMap(Tag::getTagId, Tag::getName));
+        Map<UUID, List<String>> tagsByQuizIdMap = allQuizTags.stream()
+                .collect(Collectors.groupingBy(
+                        QuizTag::getQuizId,
+                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())
+                ));
+
+        // 4. Map Quiz entities to QuizDTOs
+        List<QuizDTO> quizDTOs = quizzes.stream()
+                .map(quiz -> {
+                    // Username is known for the current user
+                    String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
+                    List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
+                    // Use the list mapper helper
+                    return mapQuizEntityToListDTO(quiz, currentUsername, coverImageUrl, tagNames);
+                })
+                .collect(Collectors.toList());
+
+        // 5. Return the Page<QuizDTO>
+        return new PageImpl<>(quizDTOs, pageable, quizPage.getTotalElements());
     }
 
     @Override
