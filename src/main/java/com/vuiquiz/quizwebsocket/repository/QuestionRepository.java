@@ -12,4 +12,5 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     List<Question> findByQuizIdOrderByPositionAsc(UUID quizId);
     // If you need to count questions for a quiz efficiently
     long countByQuizId(UUID quizId);
+    void deleteByQuizId(UUID quizId);
 }

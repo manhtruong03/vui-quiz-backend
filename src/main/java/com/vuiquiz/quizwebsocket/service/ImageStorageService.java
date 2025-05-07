@@ -11,9 +11,11 @@ import java.util.UUID;
 public interface ImageStorageService {
     ImageStorage createImageStorage(ImageStorage imageStorage);
     Optional<ImageStorage> getImageStorageById(UUID imageId);
-    Optional<ImageStorage> getImageByFilePath(String filePath);
+    Optional<ImageStorage> getImageByFilePath(String filePath); // Already in your interface
     List<ImageStorage> getImagesByCreatorId(UUID creatorId);
     Page<ImageStorage> getAllImageStorages(Pageable pageable);
-    ImageStorage updateImageStorage(UUID imageId, ImageStorage imageDetails); // Limited updates likely
+    ImageStorage updateImageStorage(UUID imageId, ImageStorage imageDetails);
     void deleteImageStorage(UUID imageId);
+
+    ImageStorage findOrCreateByFilePath(String filePath, UUID creatorId);
 }

@@ -1,24 +1,29 @@
 package com.vuiquiz.quizwebsocket.service;
 
-import com.vuiquiz.quizwebsocket.model.Quiz;
+import com.vuiquiz.quizwebsocket.dto.QuizDTO;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.List;
 
 public interface QuizService {
-    Quiz createQuiz(Quiz quiz);
-    Optional<Quiz> getQuizById(UUID quizId);
-    Page<Quiz> getAllQuizzes(Pageable pageable);
-    Page<Quiz> getQuizzesByCreatorId(UUID creatorId, Pageable pageable);
-    Page<Quiz> searchQuizzesByTitle(String title, Pageable pageable);
-    Page<Quiz> getQuizzesByStatus(String status, Pageable pageable);
-    Page<Quiz> getPublicQuizzes(Pageable pageable); // Example: visibility = 1 and status = PUBLISHED
-    Quiz updateQuiz(UUID quizId, Quiz quizDetails);
+    QuizDTO createQuiz(QuizDTO quizDto, UUID creatorId);
+
+    // Renamed for Phase 4 to reflect returning full details
+    QuizDTO getQuizDetailsById(UUID quizId);
+
+    // Internal entity fetching method (if still needed, or can be removed if not used elsewhere)
+    Optional<com.vuiquiz.quizwebsocket.model.Quiz> getQuizById(UUID quizId);
+
+    // Keep other method signatures as they are
+    com.vuiquiz.quizwebsocket.model.Quiz getQuizById_Original(UUID quizId);
+    Page<com.vuiquiz.quizwebsocket.model.Quiz> getAllQuizzes(Pageable pageable);
+    Page<com.vuiquiz.quizwebsocket.model.Quiz> getQuizzesByCreatorId(UUID creatorId, Pageable pageable);
+    Page<com.vuiquiz.quizwebsocket.model.Quiz> searchQuizzesByTitle(String title, Pageable pageable);
+    Page<com.vuiquiz.quizwebsocket.model.Quiz> getQuizzesByStatus(String status, Pageable pageable);
+    Page<com.vuiquiz.quizwebsocket.model.Quiz> getPublicQuizzes(Pageable pageable);
+    com.vuiquiz.quizwebsocket.model.Quiz updateQuiz(UUID quizId, com.vuiquiz.quizwebsocket.model.Quiz quizDetails);
     void deleteQuiz(UUID quizId);
-    Quiz updateQuizStatus(UUID quizId, String newStatus);
-    Quiz updateQuizVisibility(UUID quizId, Integer newVisibility);
-    // Methods to manage questions (e.g., QuestionService.findByQuizId()) will be separate
-    // Methods to manage tags (e.g., QuizTagService) will be separate
+    com.vuiquiz.quizwebsocket.model.Quiz updateQuizStatus(UUID quizId, String newStatus);
+    com.vuiquiz.quizwebsocket.model.Quiz updateQuizVisibility(UUID quizId, Integer newVisibility);
 }

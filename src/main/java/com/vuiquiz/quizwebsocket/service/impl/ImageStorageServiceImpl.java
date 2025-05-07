@@ -9,6 +9,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils; // For StringUtils.getFilenameExtension
 
 import java.util.List;
 import java.util.Optional;
@@ -28,7 +29,6 @@ public class ImageStorageServiceImpl implements ImageStorageService {
     @Transactional
     public ImageStorage createImageStorage(ImageStorage imageStorage) {
         imageStorage.setImageId(null);
-        // Consider validation for file path uniqueness if not handled by DB constraint message
         return imageStorageRepository.save(imageStorage);
     }
 
@@ -61,7 +61,6 @@ public class ImageStorageServiceImpl implements ImageStorageService {
     public ImageStorage updateImageStorage(UUID imageId, ImageStorage imageDetails) {
         ImageStorage existingImage = imageStorageRepository.findById(imageId)
                 .orElseThrow(() -> new ResourceNotFoundException("ImageStorage", "id", imageId));
-        // Typically, you might only update metadata like fileName if filePath is immutable
         existingImage.setFileName(imageDetails.getFileName());
         // existingImage.setFilePath(imageDetails.getFilePath()); // Be careful with this
         return imageStorageRepository.save(existingImage);
@@ -72,7 +71,33 @@ public class ImageStorageServiceImpl implements ImageStorageService {
     public void deleteImageStorage(UUID imageId) {
         ImageStorage image = imageStorageRepository.findById(imageId)
                 .orElseThrow(() -> new ResourceNotFoundException("ImageStorage", "id", imageId));
-        // Consider actual file system cleanup logic here or in an event listener
         imageStorageRepository.delete(image);
+    }
+
+    @Override
+    @Transactional
+    public ImageStorage findOrCreateByFilePath(String filePath, UUID creatorId) {
+        if (filePath == null || filePath.trim().isEmpty()) {
+            return null; // Or throw IllegalArgumentException
+        }
+        Optional<ImageStorage> existingImage = imageStorageRepository.findByFilePath(filePath);
+        if (existingImage.isPresent()) {
+            return existingImage.get();
+        } else {
+            // Basic filename extraction (can be improved)
+            String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
+            // Basic content type (can be improved or set to a generic default)
+            String extension = StringUtils.getFilenameExtension(fileName);
+            String contentType = "image/" + (extension != null ? extension : "jpeg"); // Default to jpeg if no extension
+
+            ImageStorage newImage = ImageStorage.builder()
+                    .filePath(filePath)
+                    .creatorId(creatorId)
+                    .fileName(fileName)
+                    .contentType(contentType)
+                    .fileSize(0L) // Placeholder, actual size not known from URL
+                    .build();
+            return imageStorageRepository.save(newImage);
+        }
     }
 }
