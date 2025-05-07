@@ -1,6 +1,6 @@
 package com.vuiquiz.quizwebsocket.controller;
 
-import com.vuiquiz.quizwebsocket.service.GameSessionManager;
+import com.vuiquiz.quizwebsocket.service.websocket.GameSessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference; // Import TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper;

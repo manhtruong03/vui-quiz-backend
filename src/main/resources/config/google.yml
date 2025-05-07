@@ -1,0 +1,8 @@
+google:
+  sheets:
+    webhook-url: https://script.google.com/macros/s/AKfycbyJ_IkW06k_QMDIAA928KI6uCQW9tIC47U-01Vr7LS0aQtGch55CSQE6DNHwEGqJKVNCw/exec
+  gmail:
+    smtp-host: smtp.gmail.com
+    imap-host: imap.gmail.com
+    email-address: khongphairobot1@gmail.com
+    app-password: purf gkgn ejoz sdlj

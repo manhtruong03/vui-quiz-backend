@@ -1,0 +1,15 @@
+# src/main/resources/application-prod.yml
+spring:
+  config:
+    activate:
+      on-profile: prod
+  # JPA (Blocking - JDBC) Configuration
+  datasource:
+    url: jdbc:postgresql://<your-db-host>:5432/<your-db-name>
+    driver-class-name: org.postgresql.Driver
+    username: <your-username>
+    password: <your-password>
+  # Hibernate Config
+  jpa:
+    hibernate:
+      ddl-auto: update

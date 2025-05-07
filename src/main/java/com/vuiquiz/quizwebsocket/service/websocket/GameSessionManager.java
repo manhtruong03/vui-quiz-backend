@@ -1,4 +1,4 @@
-package com.vuiquiz.quizwebsocket.service; // Use your actual package name
+package com.vuiquiz.quizwebsocket.service.websocket; // Use your actual package name
 
 import lombok.Getter;
 import lombok.Setter;
@@ -10,7 +10,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet; // Thread-safe Set
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j

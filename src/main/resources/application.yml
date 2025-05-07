@@ -1,0 +1,39 @@
+# src/main/resources/application.yml
+server:
+  port: 8080
+  servlet:
+    session:
+      timeout: 30m
+
+spring:
+  profiles:
+    active: dev
+  config:
+    import:
+      - "classpath:config/google.yml"
+  application:
+    name: vui_quiz_backend
+
+logging:
+  level:
+    org:
+      hibernate:
+        SQL: ERROR
+        type:
+          descriptor:
+            sql:
+              BasicBinder: ERROR
+        orm:
+          results: ERROR
+        internal:
+          util:
+            EntityPrinter: OFF
+      springframework:
+        orm:
+          jpa:
+            JpaTransactionManager: INFO
+          sql:
+            exec: INFO
+        jdbc:
+          datasource:
+            DataSourceUtils: INFO

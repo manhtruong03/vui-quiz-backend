@@ -1,0 +1,20 @@
+# src/main/resources/application-dev.yml
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: jdbc:postgresql://localhost:5432/vui_quiz_db
+    username: postgres
+    password: password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect  # Changed from H2Dialect
+    hibernate:
+      ddl-auto: update
+    generate-ddl: true
+    defer-datasource-initialization: true
+    properties:  # Add these properties for better PostgreSQL compatibility
+      hibernate:
+        format_sql: true
+        default_schema: public  # Explicitly set the default schema if needed

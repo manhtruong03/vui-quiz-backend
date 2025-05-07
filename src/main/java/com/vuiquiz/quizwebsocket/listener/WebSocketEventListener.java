@@ -1,12 +1,11 @@
 package com.vuiquiz.quizwebsocket.listener;
 
-import com.vuiquiz.quizwebsocket.service.GameSessionManager;
+import com.vuiquiz.quizwebsocket.service.websocket.GameSessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 // Import specific event types directly
-import org.springframework.context.ApplicationListener; // Keep general ApplicationListener
 import org.springframework.context.event.EventListener; // Alternatively, use @EventListener annotation
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
