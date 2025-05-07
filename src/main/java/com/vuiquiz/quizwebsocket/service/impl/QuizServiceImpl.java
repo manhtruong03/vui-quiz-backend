@@ -1,7 +1,7 @@
 package com.vuiquiz.quizwebsocket.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference; // For deserializing List<ChoiceDTO>
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vuiquiz.quizwebsocket.dto.ChoiceDTO;
 import com.vuiquiz.quizwebsocket.dto.QuestionDTO;
@@ -12,6 +12,7 @@ import com.vuiquiz.quizwebsocket.model.ImageStorage;
 import com.vuiquiz.quizwebsocket.model.Question;
 import com.vuiquiz.quizwebsocket.model.Quiz;
 import com.vuiquiz.quizwebsocket.model.UserAccount;
+import com.vuiquiz.quizwebsocket.repository.ImageStorageRepository;
 import com.vuiquiz.quizwebsocket.repository.QuestionRepository;
 import com.vuiquiz.quizwebsocket.repository.QuizRepository;
 import com.vuiquiz.quizwebsocket.repository.UserAccountRepository;
@@ -20,39 +21,40 @@ import com.vuiquiz.quizwebsocket.service.QuizService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 @Slf4j
 public class QuizServiceImpl implements QuizService {
 
+    // ... Inject repositories, ObjectMapper etc. ...
     private final QuizRepository quizRepository;
     private final QuestionRepository questionRepository;
     private final ImageStorageService imageStorageService;
     private final ObjectMapper objectMapper;
     private final UserAccountRepository userAccountRepository;
+    private final ImageStorageRepository imageStorageRepository; // Inject directly if needed for batch fetching
 
     @Autowired
     public QuizServiceImpl(QuizRepository quizRepository,
                            QuestionRepository questionRepository,
                            ImageStorageService imageStorageService,
                            ObjectMapper objectMapper,
-                           UserAccountRepository userAccountRepository) {
+                           UserAccountRepository userAccountRepository,
+                           ImageStorageRepository imageStorageRepository) { // Inject ImageStorageRepository
         this.quizRepository = quizRepository;
         this.questionRepository = questionRepository;
         this.imageStorageService = imageStorageService;
         this.objectMapper = objectMapper;
         this.userAccountRepository = userAccountRepository;
+        this.imageStorageRepository = imageStorageRepository; // Assign
     }
 
     @Override
@@ -158,6 +160,73 @@ public class QuizServiceImpl implements QuizService {
                 .orElse(null);
 
         return mapQuizEntityToDto(quiz, creatorUsername, true); // Load questions = true
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuizDTO> getPublicPublishedQuizzes(Pageable pageable) {
+        // 1. Fetch the page of Quiz entities
+        Page<Quiz> quizPage = quizRepository.findByVisibilityAndStatus(1, "PUBLISHED", pageable);
+
+        List<Quiz> quizzes = quizPage.getContent();
+        if (quizzes.isEmpty()) {
+            return new PageImpl<>(Collections.emptyList(), pageable, quizPage.getTotalElements());
+        }
+
+        // 2. Efficiently fetch related data for all quizzes in the list
+        // Fetch Creator Usernames
+        Set<UUID> creatorIds = quizzes.stream().map(Quiz::getCreatorId).collect(Collectors.toSet());
+        Map<UUID, String> creatorUsernameMap = userAccountRepository.findAllById(creatorIds).stream()
+                .collect(Collectors.toMap(UserAccount::getUserId, UserAccount::getUsername));
+
+        // Fetch Cover Image FilePaths
+        Set<UUID> coverImageIds = quizzes.stream()
+                .map(Quiz::getCoverImageId)
+                .filter(Objects::nonNull) // Filter out null IDs
+                .collect(Collectors.toSet());
+        Map<UUID, String> coverImageUrlMap = imageStorageRepository.findAllById(coverImageIds).stream()
+                .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
+
+        // 3. Map Quiz entities to QuizDTOs using the pre-fetched data
+        List<QuizDTO> quizDTOs = quizzes.stream()
+                .map(quiz -> {
+                    String creatorUsername = creatorUsernameMap.get(quiz.getCreatorId());
+                    String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
+                    // Use a specialized mapper or adapt the existing one for list view (no questions)
+                    return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl);
+                })
+                .collect(Collectors.toList());
+
+        // 4. Return the Page<QuizDTO>
+        return new PageImpl<>(quizDTOs, pageable, quizPage.getTotalElements());
+    }
+
+    // Mapper optimized for list view (no lobby video deserialization, no questions)
+    private QuizDTO mapQuizEntityToListDTO(Quiz quiz, String creatorUsername, String coverImageUrl) {
+        if (quiz == null) {
+            return null;
+        }
+        // Basic metadata mapping
+        return QuizDTO.builder()
+                .quizId(quiz.getQuizId())
+                .creatorId(quiz.getCreatorId())
+                .creatorUsername(creatorUsername)
+                .title(quiz.getTitle())
+                .description(quiz.getDescription())
+                .visibility(quiz.getVisibility())
+                .status(quiz.getStatus())
+                .quizType(quiz.getQuizTypeInfo())
+                .questionCount(quiz.getQuestionCount())
+                .cover(coverImageUrl) // Use the pre-fetched cover image URL
+                .created(quiz.getCreatedAt() != null ? quiz.getCreatedAt().toInstant().toEpochMilli() : null)
+                .modified(quiz.getModifiedAt() != null ? quiz.getModifiedAt().toInstant().toEpochMilli() : null)
+                .questions(Collections.emptyList()) // Ensure questions are not included
+                .isValid(true) // Assuming valid if retrieved
+                // Include other relevant fields like playCount, favoriteCount if needed for list view
+                // .playCount(quiz.getPlayCount())
+                // .favoriteCount(quiz.getFavoriteCount())
+                // Omit lobbyVideo for list performance if not needed
+                .build();
     }
 
     // Main mapper method, now with a flag to load questions

@@ -12,6 +12,9 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -61,5 +64,17 @@ public class QuizController {
                                                        @Parameter(description = "ID of the quiz to retrieve") @PathVariable UUID quizId) {
         QuizDTO quizDTO = quizService.getQuizDetailsById(quizId); // Call the renamed service method
         return ResponseEntity.ok(quizDTO);
+    }
+
+    @GetMapping("/public")
+    @Operation(summary = "Get public and published quizzes",
+            description = "Retrieves a paginated list of quizzes that are marked as public (visibility=1) and published (status='PUBLISHED').")
+    @ApiResponse(responseCode = "200", description = "List of public quizzes retrieved successfully",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Page.class))) // Response is a Page
+    public ResponseEntity<Page<QuizDTO>> getPublicPublishedQuizzes(
+            @Parameter(description = "Pagination and sorting parameters (e.g., page=0&size=10&sort=createdAt,desc)")
+            @PageableDefault(size = 10, sort = "createdAt") Pageable pageable) { // Inject Pageable
+        Page<QuizDTO> publicQuizzes = quizService.getPublicPublishedQuizzes(pageable);
+        return ResponseEntity.ok(publicQuizzes);
     }
 }
