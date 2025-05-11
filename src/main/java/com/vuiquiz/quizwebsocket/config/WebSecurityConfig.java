@@ -76,6 +76,7 @@ public class WebSecurityConfig {
                                 .requestMatchers("/ws-quiz/**").permitAll()
                                 .requestMatchers("/api/session/create").permitAll()
                                 .requestMatchers("/api/session/join/**").permitAll()
+                                .requestMatchers("/api/session/finalize").authenticated() // Add this for the new endpoint
                                 .requestMatchers("/error").permitAll()
                                 .requestMatchers(SWAGGER_WHITELIST).permitAll() // Add Swagger whitelist here
                                 .anyRequest().authenticated()

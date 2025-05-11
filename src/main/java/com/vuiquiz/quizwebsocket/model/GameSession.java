@@ -1,3 +1,4 @@
+// src/main/java/com/vuiquiz/quizwebsocket/model/GameSession.java
 package com.vuiquiz.quizwebsocket.model;
 
 import lombok.AllArgsConstructor;
@@ -15,7 +16,7 @@ import java.util.UUID;
 @AllArgsConstructor
 @Builder
 @Entity
-@Table(name = "game_session")
+@Table(name = "game_session") // Removed unique constraint on game_pin from @Table annotation
 public class GameSession { // No soft delete in the schema for this table
 
     @Id
@@ -27,7 +28,7 @@ public class GameSession { // No soft delete in the schema for this table
     @Column(name = "session_id", updatable = false, nullable = false)
     private UUID sessionId;
 
-    @Column(name = "game_pin", nullable = false, unique = true, length = 20)
+    @Column(name = "game_pin", nullable = false, length = 20) // unique = true REMOVED from @Column if it was there
     private String gamePin;
 
     @Column(name = "host_id", nullable = false) // Foreign key stored as UUID
@@ -43,18 +44,23 @@ public class GameSession { // No soft delete in the schema for this table
     private OffsetDateTime endedAt;
 
     @Column(name = "game_type", nullable = false, length = 50)
+    @Builder.Default
     private String gameType = "LIVE";
 
     @Column(name = "player_count", nullable = false)
+    @Builder.Default
     private Integer playerCount = 0;
 
     @Column(name = "status", nullable = false, length = 50)
+    @Builder.Default
     private String status = "LOBBY";
 
     @Column(name = "allow_late_join", nullable = false)
+    @Builder.Default
     private boolean allowLateJoin = true;
 
     @Column(name = "power_ups_enabled", nullable = false)
+    @Builder.Default
     private boolean powerUpsEnabled = true;
 
     @Column(name = "termination_reason", columnDefinition = "TEXT")
@@ -65,8 +71,6 @@ public class GameSession { // No soft delete in the schema for this table
 
     @Column(name = "created_at", nullable = false, updatable = false, columnDefinition = "TIMESTAMP WITH TIME ZONE")
     private OffsetDateTime createdAt;
-
-    // Removed OneToMany relationships
 
     @PrePersist
     protected void onCreate() {
