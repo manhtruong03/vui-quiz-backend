@@ -105,15 +105,44 @@ public class QuizServiceImpl implements QuizService {
 
         if (!CollectionUtils.isEmpty(quizDto.getQuestions())) {
             List<Question> questionsToSave = new ArrayList<>();
-            for (QuestionDTO questionDtoInternal : quizDto.getQuestions()) { // Renamed to avoid conflict
+            for (int i = 0; i < quizDto.getQuestions().size(); i++) {
+                QuestionDTO questionDtoInternal = quizDto.getQuestions().get(i);
+
+                // --- VALIDATE REQUIRED FIELDS MANUALLY (Since @Valid might not catch everything if position is null now) ---
+                // Example: Ensure title is still provided even if position is optional now
+                if (questionDtoInternal.getTitle() == null || questionDtoInternal.getTitle().isBlank()) {
+                    log.warn("Skipping question at index {} due to missing title for quiz '{}'", i, quizDto.getTitle());
+                    continue; // Skip this question DTO
+                }
+                if (questionDtoInternal.getType() == null || questionDtoInternal.getType().isBlank()) {
+                    log.warn("Skipping question at index {} due to missing type for quiz '{}'", i, quizDto.getTitle());
+                    continue; // Skip this question DTO
+                }
+                // Add checks for other mandatory fields per question type if necessary
+                // --- END MANUAL VALIDATION ---
+
+
                 Question question = new Question();
                 question.setQuizId(persistedQuizId);
                 question.setQuestionType(questionDtoInternal.getType());
                 question.setQuestionText(questionDtoInternal.getTitle());
                 question.setDescriptionText(questionDtoInternal.getDescription());
-                question.setTimeLimit(questionDtoInternal.getTime());
-                question.setPointsMultiplier(questionDtoInternal.getPointsMultiplier());
-                question.setPosition(questionDtoInternal.getPosition() != null ? questionDtoInternal.getPosition() : questionCount);
+
+                Integer timeLimit = questionDtoInternal.getTime();
+                question.setTimeLimit(timeLimit != null ? timeLimit : 0);
+
+                Integer pointsMultiplier = questionDtoInternal.getPointsMultiplier();
+                question.setPointsMultiplier(pointsMultiplier != null ? pointsMultiplier : 0); // Default to 0 if null
+
+                // --- Assign Position ---
+                if (questionDtoInternal.getPosition() != null) {
+                    // Position provided in DTO, use it (validation @PositiveOrZero still applies)
+                    question.setPosition(questionDtoInternal.getPosition());
+                } else {
+                    // Position not provided, assign based on array index
+                    question.setPosition(i);
+                }
+                // --- End Assign Position ---
 
                 if (questionDtoInternal.getImage() != null && !questionDtoInternal.getImage().trim().isEmpty()) {
                     ImageStorage questionImage = imageStorageService.findOrCreateByFilePath(questionDtoInternal.getImage(), creatorId);

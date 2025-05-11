@@ -1,5 +1,6 @@
 package com.vuiquiz.quizwebsocket.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid; // Ensure this is from jakarta.validation
@@ -19,6 +20,7 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = true)
 @Schema(description = "Represents a single question or content slide within a quiz")
 public class QuestionDTO {
 
@@ -58,8 +60,8 @@ public class QuestionDTO {
     @Schema(description = "Array for additional media elements (e.g., URLs or structured objects). For now, simple strings.", example = "[]")
     private List<String> media;
 
-    @NotNull(message = "Position must be provided for each question.")
-    @PositiveOrZero(message = "Position must be a non-negative integer.")
-    @Schema(description = "0-based order/position of this question within the quiz.", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
+    //    @NotNull(message = "Position must be provided for each question.")
+    @PositiveOrZero(message = "Position must be a non-negative integer if provided.") // Keep this validation
+    @Schema(description = "0-based order/position of this question within the quiz. If omitted, it will be assigned based on array order.", example = "1")
     private Integer position;
 }
