@@ -16,4 +16,5 @@ public interface PlayerAnswerRepository extends JpaRepository<PlayerAnswer, UUID
     // To get all answers for a specific question in a specific game (across all players)
     // This would require joining GameSlide with originalQuestionId if not directly stored
     // List<PlayerAnswer> findByGameSlideOriginalQuestionId(UUID originalQuestionId); // Indirect
+    List<PlayerAnswer> findByPlayerIdIn(List<UUID> playerIds);
 }

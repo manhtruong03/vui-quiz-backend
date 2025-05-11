@@ -17,4 +17,11 @@ public class DateTimeUtil {
         }
         return OffsetDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC);
     }
+
+    public static Long fromMillisToLong(OffsetDateTime offsetDateTime) {
+        if (offsetDateTime == null) {
+            return null;
+        }
+        return offsetDateTime.toInstant().toEpochMilli();
+    }
 }
