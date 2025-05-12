@@ -1,16 +1,15 @@
 // src/main/java/com/vuiquiz/quizwebsocket/controller/GameReportController.java
 package com.vuiquiz.quizwebsocket.controller;
 
-import com.vuiquiz.quizwebsocket.dto.report.PlayerAnswerReportItemDto; // Added
-import com.vuiquiz.quizwebsocket.dto.report.PlayerReportItemDto;
-import com.vuiquiz.quizwebsocket.dto.report.QuestionReportItemDto;
-import com.vuiquiz.quizwebsocket.dto.report.SessionSummaryDto;
+import com.vuiquiz.quizwebsocket.dto.report.*;
 import com.vuiquiz.quizwebsocket.service.GameReportService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -18,6 +17,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
@@ -92,5 +92,21 @@ public class GameReportController {
             Pageable pageable) {
         Page<PlayerAnswerReportItemDto> playerAnswersReport = gameReportService.getPlayerAnswersReport(sessionId, playerId, pageable);
         return ResponseEntity.ok(playerAnswersReport);
+    }
+
+    @GetMapping("/users/sessions") // Path changed as per your request
+    @PreAuthorize("isAuthenticated()") // This endpoint now requires authentication
+    @Operation(summary = "Get current authenticated user's game session history.",
+            description = "Retrieves a consolidated history of game sessions the authenticated user has hosted or participated in. Requires JWT authentication.",
+            security = @SecurityRequirement(name = "bearerAuth")) // Swagger annotation for secured endpoint
+    @ApiResponse(responseCode = "200", description = "User's session history retrieved successfully.",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = Page.class)))
+    @ApiResponse(responseCode = "401", description = "User not authenticated.")
+    public ResponseEntity<Page<UserSessionHistoryItemDto>> getCurrentUserSessionHistory(
+            @PageableDefault(size = 10, sort = "time", direction = Sort.Direction.DESC)
+            @Parameter(description = "Pagination and sorting parameters (e.g., page=0&size=10&sort=time,desc). 'time' refers to session start time.", in = ParameterIn.QUERY) // Specify 'in' for Swagger if Pageable isn't picked up correctly by default
+            Pageable pageable) {
+        Page<UserSessionHistoryItemDto> sessionHistory = gameReportService.getCurrentUserSessions(pageable);
+        return ResponseEntity.ok(sessionHistory);
     }
 }

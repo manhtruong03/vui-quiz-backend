@@ -5,11 +5,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vuiquiz.quizwebsocket.dto.ChoiceDTO;
-import com.vuiquiz.quizwebsocket.dto.QuestionDTO; // For parsing questionDistributionJson
+import com.vuiquiz.quizwebsocket.dto.QuestionDTO;
 import com.vuiquiz.quizwebsocket.dto.report.*;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
+import com.vuiquiz.quizwebsocket.exception.UnauthorizedException;
 import com.vuiquiz.quizwebsocket.model.*;
 import com.vuiquiz.quizwebsocket.repository.*;
+import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
 import com.vuiquiz.quizwebsocket.service.GameReportService;
 import com.vuiquiz.quizwebsocket.utils.DateTimeUtil;
 import lombok.RequiredArgsConstructor;
@@ -17,12 +19,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
+import java.time.OffsetDateTime;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -38,34 +45,6 @@ public class GameReportServiceImpl implements GameReportService {
     private final GameSlideRepository gameSlideRepository;
     private final ObjectMapper objectMapper;
 
-    // Helper method to determine if a slide type is a question meant for grading/answering
-    private boolean isGradableQuestionSlide(GameSlide gameSlide) {
-        if (gameSlide == null) return false;
-        String slideTypeFromEntity = gameSlide.getSlideType(); // e.g., QUESTION_SLIDE, CONTENT_SLIDE
-        String slideTypeFromDistribution = parseQuestionTypeFromDistributionJson(gameSlide.getQuestionDistributionJson()); // e.g., quiz, survey, open_ended
-
-        // Prioritize type from distribution if available, as it's more specific from quiz design
-        String effectiveType = StringUtils.hasText(slideTypeFromDistribution) ? slideTypeFromDistribution : slideTypeFromEntity;
-
-        if (effectiveType == null) return false;
-
-        switch (effectiveType.toUpperCase()) {
-            case "QUIZ":
-            case "QUESTION_SLIDE": // Generic type for questions
-            case "JUMBLE":
-            case "OPEN_ENDED":
-                return true;
-            case "SURVEY":
-            case "CONTENT":
-            case "CONTENT_SLIDE":
-            case "LEADERBOARD":
-                return false;
-            default:
-                log.warn("Unknown effective slide type for grading check: {}", effectiveType);
-                return false; // Default to not gradable if unknown
-        }
-    }
-
 
     @Override
     @Transactional(readOnly = true)
@@ -74,11 +53,17 @@ public class GameReportServiceImpl implements GameReportService {
 
         GameSession session = gameSessionRepository.findById(sessionId)
                 .orElseThrow(() -> new ResourceNotFoundException("GameSession", "id", sessionId));
+
         Quiz quiz = quizRepository.findById(session.getQuizId())
                 .orElseThrow(() -> new ResourceNotFoundException("Quiz", "id", session.getQuizId()));
+
         UserAccount host = userAccountRepository.findById(session.getHostId())
                 .orElseThrow(() -> new ResourceNotFoundException("UserAccount (Host)", "id", session.getHostId()));
-        UserAccount quizCreator = quiz.getCreatorId() != null ? userAccountRepository.findById(quiz.getCreatorId()).orElse(null) : null;
+
+        UserAccount quizCreator = null;
+        if (quiz.getCreatorId() != null) {
+            quizCreator = userAccountRepository.findById(quiz.getCreatorId()).orElse(null);
+        }
 
         List<Player> players = playerRepository.findBySessionId(sessionId);
         List<GameSlide> allPresentedSlides = gameSlideRepository.findBySessionIdOrderBySlideIndexAsc(sessionId);
@@ -86,10 +71,8 @@ public class GameReportServiceImpl implements GameReportService {
         List<UUID> playerIds = players.stream().map(Player::getPlayerId).collect(Collectors.toList());
         List<PlayerAnswer> allPlayerAnswers = playerIds.isEmpty() ? List.of() : playerAnswerRepository.findByPlayerIdIn(playerIds);
 
-        // 1. questionsCount: Total slides presented (including content, etc., as per your request)
         int totalPresentedSlidesCount = allPresentedSlides.size();
 
-        // Identify gradable question slides and their IDs
         List<GameSlide> gradableQuestionSlides = allPresentedSlides.stream()
                 .filter(this::isGradableQuestionSlide)
                 .collect(Collectors.toList());
@@ -98,13 +81,12 @@ public class GameReportServiceImpl implements GameReportService {
                 .collect(Collectors.toList());
 
         long totalCorrectAnswersOnGradableQuestions = 0;
-        long totalValidAnswersOnGradableQuestions = 0; // Answers that were not TIMEOUT or SKIPPED
+        long totalValidAnswersOnGradableQuestions = 0;
         long totalReactionTimeForCorrectGradable = 0;
         long countCorrectAnswersForReactionTimeAvg = 0;
 
         for (PlayerAnswer answer : allPlayerAnswers) {
             if (gradableQuestionSlideIds.contains(answer.getSlideId())) {
-                // Only consider answers that were actually submitted (not timeout/skipped) for accuracy denominator
                 if (!"TIMEOUT".equalsIgnoreCase(answer.getStatus()) && !"SKIPPED".equalsIgnoreCase(answer.getStatus())) {
                     totalValidAnswersOnGradableQuestions++;
                     if ("CORRECT".equalsIgnoreCase(answer.getStatus())) {
@@ -118,7 +100,6 @@ public class GameReportServiceImpl implements GameReportService {
             }
         }
 
-        // 2. averageAccuracy: Based on gradable questions only
         double averageAccuracy = (totalValidAnswersOnGradableQuestions > 0) ?
                 (double) totalCorrectAnswersOnGradableQuestions / totalValidAnswersOnGradableQuestions : 0.0;
 
@@ -134,8 +115,7 @@ public class GameReportServiceImpl implements GameReportService {
         double averageIncorrectAnswerCount = !players.isEmpty() ?
                 (double) totalWrongAnswersOnGradableQuestions / players.size() : 0.0;
 
-        // 3. scoredBlocksWithAnswersCount: Gradable question slides that received at least one answer
-        // (Here, "answer" means any PlayerAnswer record, could include TIMEOUT if those are stored)
+
         int scoredBlocksWithAnswersCount = (int) gradableQuestionSlideIds.stream()
                 .filter(slideId -> allPlayerAnswers.stream().anyMatch(pa -> pa.getSlideId().equals(slideId)))
                 .count();
@@ -151,19 +131,42 @@ public class GameReportServiceImpl implements GameReportService {
                 .type(session.getGameType())
                 .name(quiz.getTitle())
                 .playerCount(session.getPlayerCount())
-                .questionsCount(totalPresentedSlidesCount) // Adjusted: count all presented slides
-                .averageAccuracy(averageAccuracy) // Adjusted: based on gradable questions
+                .questionsCount(totalPresentedSlidesCount)
+                .averageAccuracy(averageAccuracy)
                 .time(DateTimeUtil.fromMillisToLong(session.getStartedAt()))
                 .endTime(DateTimeUtil.fromMillisToLong(session.getEndedAt()))
                 .username(host.getUsername())
                 .hostId(host.getUserId().toString())
-                .isScored(!gradableQuestionSlides.isEmpty()) // True if there's at least one gradable question
-                .hasCorrectness(!gradableQuestionSlides.isEmpty()) // Similar logic for MVP
+                .isScored(!gradableQuestionSlides.isEmpty())
+                .hasCorrectness(!gradableQuestionSlides.isEmpty())
                 .quizInfo(quizInfoDto)
-                .scoredBlocksWithAnswersCount(scoredBlocksWithAnswersCount) // Based on gradable questions
-                .averageTime(averageTimeForCorrect) // Based on correct answers to gradable questions
-                .averageIncorrectAnswerCount(averageIncorrectAnswerCount) // Based on wrong answers to gradable questions
+                .scoredBlocksWithAnswersCount(scoredBlocksWithAnswersCount)
+                .averageTime(averageTimeForCorrect)
+                .averageIncorrectAnswerCount(averageIncorrectAnswerCount)
                 .build();
+    }
+
+    private boolean isGradableQuestionSlide(GameSlide gameSlide) {
+        if (gameSlide == null) return false;
+        String slideTypeFromEntity = gameSlide.getSlideType();
+        String slideTypeFromDistribution = parseQuestionTypeFromDistributionJson(gameSlide.getQuestionDistributionJson());
+        String effectiveType = StringUtils.hasText(slideTypeFromDistribution) ? slideTypeFromDistribution : slideTypeFromEntity;
+        if (effectiveType == null) return false;
+        switch (effectiveType.toUpperCase()) {
+            case "QUIZ":
+            case "QUESTION_SLIDE":
+            case "JUMBLE":
+            case "OPEN_ENDED":
+                return true;
+            case "SURVEY": // Explicitly not gradable for accuracy
+            case "CONTENT":
+            case "CONTENT_SLIDE":
+            case "LEADERBOARD":
+                return false;
+            default:
+                log.trace("Unknown effective slide type for grading check: {}", effectiveType);
+                return false;
+        }
     }
 
     // (parseQuestionTypeFromDistributionJson, getPlayerReports, mapPlayerToReportItemDto remain the same)
@@ -281,7 +284,6 @@ public class GameReportServiceImpl implements GameReportService {
         }
 
         String title = originalQuestionData != null && originalQuestionData.getTitle() != null ? originalQuestionData.getTitle() : "N/A (Content Slide or Missing Title)";
-        // Use effective type for display
         String effectiveSlideTypeForDisplay = parseQuestionTypeFromDistributionJson(slide.getQuestionDistributionJson());
         if (!StringUtils.hasText(effectiveSlideTypeForDisplay)) {
             effectiveSlideTypeForDisplay = slide.getSlideType();
@@ -291,11 +293,11 @@ public class GameReportServiceImpl implements GameReportService {
         String imageUrl = originalQuestionData != null ? originalQuestionData.getImage() : null;
         com.vuiquiz.quizwebsocket.dto.VideoDetailDTO videoDetail = originalQuestionData != null ? originalQuestionData.getVideo() : null;
 
-        long totalAnswersSubmitted = answersForThisSlide.size(); // All answer attempts including timeouts
+        long totalAnswersSubmitted = answersForThisSlide.size();
         long totalAnsweredControllers = answersForThisSlide.stream().map(PlayerAnswer::getPlayerId).distinct().count();
 
-        Double questionAccuracy = null; // Null if not a gradable question
-        Double averageTime = null;      // Null if not a gradable question or no answers
+        Double questionAccuracy = null;
+        Double averageTimeVal = null;
 
         if (isGradableQuestionSlide(slide)) {
             long correctAnswersCount = answersForThisSlide.stream().filter(a -> "CORRECT".equalsIgnoreCase(a.getStatus())).count();
@@ -304,15 +306,22 @@ public class GameReportServiceImpl implements GameReportService {
                     .count();
             questionAccuracy = (validAnswersForAccuracy > 0) ? (double) correctAnswersCount / validAnswersForAccuracy : 0.0;
 
-            averageTime = answersForThisSlide.stream()
+            OptionalDouble avgTimeOpt = answersForThisSlide.stream()
                     .filter(a -> a.getReactionTimeMs() != null && (!"TIMEOUT".equalsIgnoreCase(a.getStatus()) && !"SKIPPED".equalsIgnoreCase(a.getStatus())) )
                     .mapToInt(PlayerAnswer::getReactionTimeMs)
-                    .average().orElse(0.0);
+                    .average();
+            if (avgTimeOpt.isPresent()) {
+                averageTimeVal = avgTimeOpt.getAsDouble();
+            } else if (validAnswersForAccuracy > 0) {
+                averageTimeVal = 0.0;
+            }
         }
 
-
         List<AnswerDistributionDto> answerDistributionList = new ArrayList<>();
-        if (isGradableQuestionSlide(slide) && !CollectionUtils.isEmpty(originalChoices)) { // Only show distribution for gradable with choices
+        // Populate distribution for gradable questions OR survey questions with choices
+        boolean shouldPopulateDistribution = (isGradableQuestionSlide(slide) || "SURVEY".equalsIgnoreCase(effectiveSlideTypeForDisplay)) && !CollectionUtils.isEmpty(originalChoices);
+
+        if (shouldPopulateDistribution) {
             for (int i = 0; i < originalChoices.size(); i++) {
                 final int choiceIdx = i;
                 ChoiceDTO choiceDto = originalChoices.get(i);
@@ -320,16 +329,21 @@ public class GameReportServiceImpl implements GameReportService {
                         .filter(pa -> playerChoseOption(pa.getChoice(), choiceIdx, objectMapper, slide.getSlideId()))
                         .count();
 
+                String choiceStatus = "SURVEY_OPTION"; // Default for survey
+                if (isGradableQuestionSlide(slide)) { // Override for gradable
+                    choiceStatus = choiceDto.getCorrect() != null && choiceDto.getCorrect() ? "CORRECT" : "WRONG";
+                }
+
                 answerDistributionList.add(AnswerDistributionDto.builder()
                         .choiceIndex(choiceIdx)
                         .answerText(choiceDto.getAnswer())
-                        .status(choiceDto.getCorrect() != null && choiceDto.getCorrect() ? "CORRECT" : "WRONG")
+                        .status(choiceStatus)
                         .count((int) countForThisChoice)
                         .build());
             }
         }
-        // Add TIMEOUT to distribution only for gradable questions
-        if(isGradableQuestionSlide(slide)){
+        // Add TIMEOUT to distribution only for gradable/survey questions that expect an answer
+        if(isGradableQuestionSlide(slide) || "SURVEY".equalsIgnoreCase(effectiveSlideTypeForDisplay)){
             long timeoutCount = answersForThisSlide.stream().filter(a -> "TIMEOUT".equalsIgnoreCase(a.getStatus())).count();
             if (timeoutCount > 0) {
                 answerDistributionList.add(AnswerDistributionDto.builder()
@@ -341,19 +355,18 @@ public class GameReportServiceImpl implements GameReportService {
             }
         }
 
-
         return QuestionReportItemDto.builder()
                 .slideIndex(slide.getSlideIndex())
                 .title(title)
-                .type(effectiveSlideTypeForDisplay) // Display effective type
+                .type(effectiveSlideTypeForDisplay)
                 .choices(originalChoices)
                 .imageUrl(imageUrl)
                 .video(videoDetail)
-                .totalAnswers((int) totalAnswersSubmitted) // Total attempts on this slide
-                .totalAnsweredControllers((int) totalAnsweredControllers) // Distinct players who interacted
-                .averageAccuracy(questionAccuracy) // Null if not gradable
-                .averageTime(averageTime) // Null if not gradable or no valid answers
-                .answersDistribution(answerDistributionList) // Empty if not gradable with choices
+                .totalAnswers((int) totalAnswersSubmitted)
+                .totalAnsweredControllers((int) totalAnsweredControllers)
+                .averageAccuracy(questionAccuracy)
+                .averageTime(averageTimeVal)
+                .answersDistribution(answerDistributionList)
                 .build();
     }
 
@@ -391,7 +404,7 @@ public class GameReportServiceImpl implements GameReportService {
         Player player = playerRepository.findById(playerId)
                 .orElseThrow(() -> new ResourceNotFoundException("Player", "id", playerId));
         if (!player.getSessionId().equals(sessionId)) {
-            log.warn("Player {} does not belong to session {}.", playerId, sessionId);
+            log.warn("Player {} does not belong to session {}. Access denied or data mismatch.", playerId, sessionId);
             throw new IllegalArgumentException("Player " + playerId + " does not belong to session " + sessionId);
         }
 
@@ -509,5 +522,113 @@ public class GameReportServiceImpl implements GameReportService {
                 .answerDetails(answerDetails)
                 .questionContextData(questionContext)
                 .build();
+    }
+
+
+    // --- New Method for Reporting Phase 5 ---
+    @Override
+    @Transactional(readOnly = true)
+    public Page<UserSessionHistoryItemDto> getCurrentUserSessions(Pageable pageable) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated() || !(authentication.getPrincipal() instanceof UserDetailsImpl)) {
+            log.warn("Attempt to get current user sessions without proper authentication.");
+            // Depending on how strict you want to be, you could throw an exception
+            // or return an empty page. Spring Security should ideally prevent this.
+            throw new UnauthorizedException("User must be authenticated to access their session history.");
+        }
+        UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+        UUID currentUserId = userDetails.getId();
+
+        log.info("Fetching all participated/hosted sessions for authenticated user ID: {} with page request: {}", currentUserId, pageable);
+
+        // 1. Fetch sessions hosted by the user
+        List<GameSession> hostedSessions = gameSessionRepository.findByHostId(currentUserId);
+
+        // 2. Fetch sessions participated in by the user
+        List<Player> playerRecords = playerRepository.findByUserId(currentUserId);
+        List<UUID> participatedSessionIds = playerRecords.stream()
+                .map(Player::getSessionId)
+                .distinct()
+                .collect(Collectors.toList());
+
+        List<GameSession> participatedSessions = participatedSessionIds.isEmpty() ?
+                Collections.emptyList() :
+                gameSessionRepository.findAllById(participatedSessionIds);
+
+        // 3. Combine and Deduplicate
+        Map<UUID, GameSession> distinctSessionsMap = new HashMap<>();
+        hostedSessions.forEach(session -> distinctSessionsMap.put(session.getSessionId(), session));
+        participatedSessions.forEach(session -> distinctSessionsMap.putIfAbsent(session.getSessionId(), session));
+
+        List<GameSession> allRelevantSessions = new ArrayList<>(distinctSessionsMap.values());
+
+        // 4. Sort the combined list based on Pageable
+        // Manual sort implementation based on common properties
+        Sort sort = pageable.getSort();
+        if (sort.isSorted()) {
+            for (Sort.Order order : sort) {
+                Comparator<GameSession> comparator = null;
+                switch (order.getProperty().toLowerCase()) {
+                    case "time": // Maps to startedAt
+                    case "startedat":
+                        comparator = Comparator.comparing(GameSession::getStartedAt, Comparator.nullsLast(OffsetDateTime::compareTo));
+                        break;
+                    case "endtime":
+                        comparator = Comparator.comparing(GameSession::getEndedAt, Comparator.nullsLast(OffsetDateTime::compareTo));
+                        break;
+                    case "playercount":
+                        comparator = Comparator.comparing(GameSession::getPlayerCount, Comparator.nullsLast(Integer::compareTo));
+                        break;
+                    // Add more sortable GameSession properties here if needed
+                }
+                if (comparator != null) {
+                    if (order.isDescending()) {
+                        comparator = comparator.reversed();
+                    }
+                    allRelevantSessions.sort(comparator);
+                } else {
+                    log.warn("Unsupported sort property for UserSessionHistory: {}", order.getProperty());
+                }
+            }
+        } else {
+            // Default sort if no sort provided in Pageable: by startedAt descending
+            allRelevantSessions.sort(Comparator.comparing(GameSession::getStartedAt, Comparator.nullsLast(OffsetDateTime::compareTo)).reversed());
+        }
+
+
+        // 5. Manual Pagination
+        int start = (int) pageable.getOffset();
+        int end = Math.min((start + pageable.getPageSize()), allRelevantSessions.size());
+        List<GameSession> pagedSessions = (start <= end && start < allRelevantSessions.size()) ? allRelevantSessions.subList(start, end) : Collections.emptyList();
+
+        // 6. Populate DTOs (Batch fetch related entities for the current page)
+        Set<UUID> quizIdsForPage = pagedSessions.stream().map(GameSession::getQuizId).collect(Collectors.toSet());
+        Map<UUID, Quiz> quizMap = quizIdsForPage.isEmpty() ? Collections.emptyMap() :
+                quizRepository.findAllById(quizIdsForPage).stream().collect(Collectors.toMap(Quiz::getQuizId, Function.identity()));
+
+        Set<UUID> hostIdsForPage = pagedSessions.stream().map(GameSession::getHostId).collect(Collectors.toSet());
+        Map<UUID, UserAccount> hostUserMap = hostIdsForPage.isEmpty() ? Collections.emptyMap() :
+                userAccountRepository.findAllById(hostIdsForPage).stream().collect(Collectors.toMap(UserAccount::getUserId, Function.identity()));
+
+        List<UserSessionHistoryItemDto> dtos = pagedSessions.stream().map(session -> {
+            Quiz quiz = quizMap.get(session.getQuizId());
+            UserAccount sessionHost = hostUserMap.get(session.getHostId());
+            String roleInSession = session.getHostId().equals(currentUserId) ? "HOST" : "PLAYER";
+
+            return UserSessionHistoryItemDto.builder()
+                    .sessionId(session.getSessionId().toString())
+                    .name(quiz != null ? quiz.getTitle() : "N/A")
+                    .time(DateTimeUtil.fromMillisToLong(session.getStartedAt()))
+                    .endTime(DateTimeUtil.fromMillisToLong(session.getEndedAt()))
+                    .type(session.getGameType())
+                    .playerCount(session.getPlayerCount())
+                    .roleInSession(roleInSession)
+                    .sessionHostUserId(session.getHostId().toString())
+                    .sessionHostUsername(sessionHost != null ? sessionHost.getUsername() : "N/A")
+                    .quizId(session.getQuizId().toString())
+                    .build();
+        }).collect(Collectors.toList());
+
+        return new PageImpl<>(dtos, pageable, allRelevantSessions.size());
     }
 }
