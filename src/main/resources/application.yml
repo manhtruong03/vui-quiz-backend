@@ -42,3 +42,9 @@ logging:
         jdbc:
           datasource:
             DataSourceUtils: INFO
+        messaging: TRACE
+        web:
+          socket: TRACE
+      apache:
+        tomcat:
+          websocket: DEBUG

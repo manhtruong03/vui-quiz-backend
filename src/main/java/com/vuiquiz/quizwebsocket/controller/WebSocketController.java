@@ -2,13 +2,13 @@ package com.vuiquiz.quizwebsocket.controller;
 
 import com.vuiquiz.quizwebsocket.service.websocket.GameSessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference; // Import TypeReference
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
-import org.springframework.messaging.handler.annotation.Payload; // Use @Payload for the message body
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
@@ -23,23 +23,15 @@ public class WebSocketController {
 
     private final GameSessionManager sessionManager;
     private final SimpMessagingTemplate messagingTemplate;
-    private final ObjectMapper objectMapper; // For JSON manipulation
+    private final ObjectMapper objectMapper;
 
-    // Define a TypeReference for parsing the expected message structure
-    // Based on docs/websocket_message_structure.txt
     private static final TypeReference<List<Map<String, Object>>> MESSAGE_LIST_TYPE_REF = new TypeReference<>() {};
+    private static final String USER_QUEUE_PRIVATE_SUFFIX = "/queue/private"; // For client subscription
+    private static final String BROKER_USER_QUEUE_PREFIX = "/queue/private-user"; // How SimpleBroker sees it
 
-    /**
-     * Handles messages sent to /app/controller/{gamepin}.
-     * Acts as a relay, adding sender's CID and forwarding the message.
-     *
-     * @param gamepin The game pin from the destination path.
-     * @param messagePayload The raw message payload (expected to be a JSON string, potentially an array).
-     * @param headerAccessor Accessor for message headers (contains session ID).
-     */
     @MessageMapping("/controller/{gamepin}")
     public void relayGameAction(@DestinationVariable String gamepin,
-                                @Payload String messagePayload, // Receive raw payload
+                                @Payload String messagePayload,
                                 SimpMessageHeaderAccessor headerAccessor) {
 
         String senderSessionId = headerAccessor.getSessionId();
@@ -53,19 +45,12 @@ public class WebSocketController {
         GameSessionManager.SessionInfo session = sessionManager.getSession(gamepin);
         if (session == null) {
             log.warn("Received message for non-existent session PIN: {}. Sender: {}", gamepin, senderSessionId);
-            // Optional: Send error back to sender
-            // messagingTemplate.convertAndSendToUser(senderSessionId, "/queue/errors", "{\"error\":\"Session not found\"}", createHeaders(senderSessionId));
             return;
         }
 
-        // Determine if the sender is the host
         boolean isHostMessage = session.isHost(senderSessionId);
-        String senderRole = isHostMessage ? "HOST" : "PLAYER";
 
         try {
-            // --- Parse, Modify, Re-serialize ---
-            // The docs show messages often wrapped in an array, e.g., [{...}]
-            // We need to handle this structure.
             List<Map<String, Object>> messageList = objectMapper.readValue(messagePayload, MESSAGE_LIST_TYPE_REF);
 
             if (messageList == null || messageList.isEmpty()) {
@@ -73,71 +58,76 @@ public class WebSocketController {
                 return;
             }
 
-            // Process each message in the list (usually just one)
             for (Map<String, Object> message : messageList) {
-                // Add/Update the 'cid' (Client ID) in the 'data' part of the message
-                // Ensure 'data' exists and is a Map
+                Map<String, Object> dataMap = null;
                 Object dataObj = message.get("data");
+
                 if (dataObj instanceof Map) {
-                    @SuppressWarnings("unchecked") // Necessary cast
-                    Map<String, Object> dataMap = (Map<String, Object>) dataObj;
-                    dataMap.put("cid", senderSessionId); // Add sender's WebSocket Session ID as 'cid'
+                    dataMap = (Map<String, Object>) dataObj;
                 } else {
-                    log.warn("Message from {} for session {} is missing 'data' map or has incorrect format. Payload: {}", senderSessionId, gamepin, message);
-                    // Optionally create the data map if strictly needed, but indicates client error
-                    // Map<String, Object> newDataMap = new HashMap<>();
-                    // newDataMap.put("cid", senderSessionId);
-                    // message.put("data", newDataMap);
-                    continue; // Skip this message if format is wrong
+                    log.warn("Message from {} for session {} is missing 'data' map or has incorrect format. Original message: {}", senderSessionId, gamepin, message);
+                    continue;
                 }
 
-                // Add sender role if needed by clients (Optional)
-                // message.put("senderRole", senderRole);
+                boolean processedPrivately = false;
 
-                // Re-serialize the modified message object (just this one element for sending)
-                String modifiedPayload = objectMapper.writeValueAsString(message); // Send single modified object
+                if (isHostMessage && dataMap != null) {
+                    Object messageDataIdObj = dataMap.get("id");
+                    Object targetPlayerCidObj = dataMap.get("cid");
 
-                // --- Relay Logic ---
-                if (isHostMessage) {
-                    // Host sends message -> Relay to all players on the player topic
-                    String destination = "/topic/player/" + gamepin;
-                    log.info("Relaying message from HOST {} to Players [{}]: {}", senderSessionId, destination, modifiedPayload);
-                    messagingTemplate.convertAndSend(destination, modifiedPayload);
-                } else {
-                    // Player sends message -> Relay ONLY to the host on the host topic
-                    String hostSessionId = session.getHostSessionId();
-                    if (hostSessionId != null) {
-                        String destination = "/topic/host/" + gamepin; // Topic specific to the host of this game
-                        log.info("Relaying message from PLAYER {} to Host {} [{}]: {}", senderSessionId, hostSessionId, destination, modifiedPayload);
-                        // The host client needs to subscribe to /topic/host/{gamepin}
-                        messagingTemplate.convertAndSend(destination, modifiedPayload);
-                        // Alternatively, send directly to the host user if user destinations are set up:
-                        // messagingTemplate.convertAndSendToUser(hostSessionId, "/queue/player-messages", modifiedPayload, createHeaders(hostSessionId));
-                    } else {
-                        log.warn("Player {} sent message for session {} but host is not connected.", senderSessionId, gamepin);
-                        // Optional: Notify player that host is unavailable
+                    if (messageDataIdObj instanceof Number && targetPlayerCidObj instanceof String) {
+                        int msgId = ((Number) messageDataIdObj).intValue();
+                        String targetPlayerCid = (String) targetPlayerCidObj; // This IS the STOMP session ID of the player
+
+                        if (msgId == 8 || msgId == 13) {
+                            String privateMessagePayloadJson = objectMapper.writeValueAsString(message); // Use the original message structure
+
+                            // +++ MODIFICATION: Send directly to the resolved broker queue +++
+                            String resolvedBrokerDestination = BROKER_USER_QUEUE_PREFIX + targetPlayerCid;
+
+                            log.info("Relaying private message from HOST {} to Player {} on resolved broker destination: {}. Message: {}",
+                                    senderSessionId, targetPlayerCid, resolvedBrokerDestination, privateMessagePayloadJson);
+
+                            // Instead of convertAndSendToUser, use convertAndSend directly to the broker queue
+                            // that the client (sub-1) is actually subscribed to.
+                            messagingTemplate.convertAndSend(resolvedBrokerDestination, privateMessagePayloadJson);
+                            // +++ END MODIFICATION +++
+
+                            processedPrivately = true;
+                        }
                     }
                 }
-            } // End loop through messages in list
 
+                if (!processedPrivately) {
+                    if (dataMap != null) {
+                        dataMap.put("cid", senderSessionId);
+                    } else {
+                        log.error("DataMap is null when attempting to set sender's CID for non-private message. Session: {}, Sender: {}. Message: {}", gamepin, senderSessionId, message);
+                        continue;
+                    }
+                    String modifiedPayload = objectMapper.writeValueAsString(message); // Use the original message map
+                    if (isHostMessage) {
+                        String destination = "/topic/player/" + gamepin;
+                        log.info("Broadcasting message from HOST {} to Players [{}]: {}", senderSessionId, destination, modifiedPayload);
+                        messagingTemplate.convertAndSend(destination, modifiedPayload);
+                    } else {
+                        String hostSessionId = session.getHostSessionId();
+                        if (hostSessionId != null) {
+                            String destination = "/topic/host/" + gamepin;
+                            log.info("Relaying message from PLAYER {} to Host {} [{}]: {}", senderSessionId, hostSessionId, destination, modifiedPayload);
+                            messagingTemplate.convertAndSend(destination, modifiedPayload);
+                        } else {
+                            log.warn("Player {} sent message for session {} but host is not connected.", senderSessionId, gamepin);
+                        }
+                    }
+                }
+            }
         } catch (JsonProcessingException e) {
-            log.error("Failed to parse/serialize message from {} for session {}: {}", senderSessionId, gamepin, e.getMessage());
-            // Optional: Send error back to sender
+            log.error("Failed to parse/serialize message from {} for session {}: {}. Raw payload: {}", senderSessionId, gamepin, e.getMessage(), messagePayload);
         } catch (ClassCastException e) {
-            log.error("Failed processing message structure from {} for session {}: {}. Payload: {}", senderSessionId, gamepin, e.getMessage(), messagePayload);
-            // Optional: Send error back to sender
-        } catch (Exception e) { // Catch other potential errors
+            log.error("Failed processing message structure (casting issue) from {} for session {}: {}. Raw payload: {}", senderSessionId, gamepin, e.getMessage(), messagePayload);
+        } catch (Exception e) {
             log.error("Unexpected error relaying message from {} for session {}: {}", senderSessionId, gamepin, e.getMessage(), e);
         }
     }
-
-    // Optional Helper: createHeaders for sendToUser (if needed)
-    /*
-    private MessageHeaders createHeaders(String sessionId) {
-        SimpMessageHeaderAccessor headerAccessor = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
-        headerAccessor.setSessionId(sessionId);
-        headerAccessor.setLeaveMutable(true);
-        return headerAccessor.getMessageHeaders();
-    }
-    */
 }
