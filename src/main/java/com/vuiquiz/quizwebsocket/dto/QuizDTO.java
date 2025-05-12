@@ -91,4 +91,8 @@ public class QuizDTO {
     @Schema(description = "List of tag names associated with the quiz. Provided during creation, included in responses.",
             example = "[\"Science\", \"2019\", \"Trivia\"]")
     private List<String> tags;
+
+    @Schema(description = "Calculated total time limit (in milliseconds) for all questions in the quiz. Only present in specific responses like /my-quizzes.",
+            example = "300000", nullable = true)
+    private Integer totalQuizTimeLimitMs;
 }

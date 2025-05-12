@@ -13,4 +13,5 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     // If you need to count questions for a quiz efficiently
     long countByQuizId(UUID quizId);
     void deleteByQuizId(UUID quizId);
+    List<Question> findByQuizIdIn(List<UUID> quizIds);
 }

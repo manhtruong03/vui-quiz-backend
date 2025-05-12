@@ -25,6 +25,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -200,7 +201,10 @@ public class QuizServiceImpl implements QuizService {
                 .map(UserAccount::getUsername)
                 .orElse(null);
 
-        QuizDTO responseDto = mapQuizEntityToDto(finalSavedQuiz, creatorUsername, false, Collections.emptyList()); // Pass empty tags list for create response
+        QuizDTO responseDto = mapQuizEntityToDto(
+                finalSavedQuiz, creatorUsername,
+                false, Collections.emptyList(), false
+        ); // Pass empty tags list for create response
         return responseDto;
     }
 
@@ -217,7 +221,7 @@ public class QuizServiceImpl implements QuizService {
         // Fetch Tags for this quiz
         List<String> tagNames = getTagNamesForQuiz(quizId);
 
-        return mapQuizEntityToDto(quiz, creatorUsername, true, tagNames); // Pass tag names, load questions = true
+        return mapQuizEntityToDto(quiz, creatorUsername, true, tagNames, true); // Pass tag names, load questions = true
     }
 
     // Helper to get tag names
@@ -234,56 +238,61 @@ public class QuizServiceImpl implements QuizService {
     @Override
     @Transactional(readOnly = true)
     public Page<QuizDTO> getQuizzesByCurrentUser(Pageable pageable) {
-        // 1. Get current user's ID
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated() || !(authentication.getPrincipal() instanceof UserDetailsImpl)) {
-            // Handle cases where user is not authenticated appropriately
-            // Option 1: Throw exception
-            // throw new IllegalStateException("User must be authenticated to fetch their quizzes.");
-            // Option 2: Return empty page
             return new PageImpl<>(Collections.emptyList(), pageable, 0);
         }
         UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
         UUID currentUserId = userDetails.getId();
-        String currentUsername = userDetails.getUsername(); // Get username directly
+        String currentUsername = userDetails.getUsername();
 
-        // 2. Fetch the page of Quiz entities for this user
         Page<Quiz> quizPage = quizRepository.findByCreatorId(currentUserId, pageable);
-
         List<Quiz> quizzes = quizPage.getContent();
+
         if (quizzes.isEmpty()) {
             return new PageImpl<>(Collections.emptyList(), pageable, quizPage.getTotalElements());
         }
 
-        // 3. Efficiently fetch related data (only need covers and tags, username is known)
-        // Fetch Cover Image FilePaths
-        Set<UUID> coverImageIds = quizzes.stream()
-                .map(Quiz::getCoverImageId)
-                .filter(id -> id != null)
-                .collect(Collectors.toSet());
+        // Efficiently fetch related data
+        Set<UUID> coverImageIds = quizzes.stream().map(Quiz::getCoverImageId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<UUID, String> coverImageUrlMap = imageStorageRepository.findAllById(coverImageIds).stream()
                 .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
 
-        // Fetch Tags
         List<UUID> quizIds = quizzes.stream().map(Quiz::getQuizId).collect(Collectors.toList());
         List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds);
         Set<UUID> allTagIds = allQuizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
         Map<UUID, String> tagNameMap = tagRepository.findAllById(allTagIds).stream()
                 .collect(Collectors.toMap(Tag::getTagId, Tag::getName));
         Map<UUID, List<String>> tagsByQuizIdMap = allQuizTags.stream()
-                .collect(Collectors.groupingBy(
-                        QuizTag::getQuizId,
-                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())
-                ));
+                .collect(Collectors.groupingBy(QuizTag::getQuizId,
+                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())));
+
+        // --- TWEAK 2: Fetch questions for each quiz to calculate total time limit ---
+        // This can lead to N+1 if not handled carefully. Fetching all questions for all quizzes on the page:
+        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> questionsByQuizIdMap = new HashMap<>();
+        if (!quizIds.isEmpty()) {
+            List<com.vuiquiz.quizwebsocket.model.Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
+            questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(com.vuiquiz.quizwebsocket.model.Question::getQuizId));
+        }
+        // --- END TWEAK 2 PREPARATION ---
+
+        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> finalQuestionsMap = questionsByQuizIdMap; // Effective final for lambda
 
         // 4. Map Quiz entities to QuizDTOs
         List<QuizDTO> quizDTOs = quizzes.stream()
                 .map(quiz -> {
-                    // Username is known for the current user
                     String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
-                    // Use the list mapper helper
-                    return mapQuizEntityToListDTO(quiz, currentUsername, coverImageUrl, tagNames);
+
+                    // --- TWEAK 2: Calculate total time limit ---
+                    List<com.vuiquiz.quizwebsocket.model.Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
+                    int totalTimeLimitMs = quizQuestions.stream()
+                            .filter(q -> q.getTimeLimit() != null)
+                            .mapToInt(com.vuiquiz.quizwebsocket.model.Question::getTimeLimit)
+                            .sum();
+                    // --- END TWEAK 2 CALCULATION ---
+
+                    return mapQuizEntityToListDTO(quiz, currentUsername, coverImageUrl, tagNames, totalTimeLimitMs);
                 })
                 .collect(Collectors.toList());
 
@@ -300,28 +309,29 @@ public class QuizServiceImpl implements QuizService {
             return new PageImpl<>(Collections.emptyList(), pageable, quizPage.getTotalElements());
         }
 
-        // Efficiently fetch related data
         Set<UUID> creatorIds = quizzes.stream().map(Quiz::getCreatorId).collect(Collectors.toSet());
         Map<UUID, String> creatorUsernameMap = userAccountRepository.findAllById(creatorIds).stream()
                 .collect(Collectors.toMap(UserAccount::getUserId, UserAccount::getUsername));
 
-        Set<UUID> coverImageIds = quizzes.stream().map(Quiz::getCoverImageId).filter(id -> id != null).collect(Collectors.toSet());
+        Set<UUID> coverImageIds = quizzes.stream().map(Quiz::getCoverImageId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<UUID, String> coverImageUrlMap = imageStorageRepository.findAllById(coverImageIds).stream()
                 .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
 
-        // Fetch Tags efficiently for all quizzes in the page
         List<UUID> quizIds = quizzes.stream().map(Quiz::getQuizId).collect(Collectors.toList());
-        List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds); // Need this method in QuizTagRepository
+        List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds);
         Set<UUID> allTagIds = allQuizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
         Map<UUID, String> tagNameMap = tagRepository.findAllById(allTagIds).stream()
                 .collect(Collectors.toMap(Tag::getTagId, Tag::getName));
-
-        // Group tag names by quizId
         Map<UUID, List<String>> tagsByQuizIdMap = allQuizTags.stream()
-                .collect(Collectors.groupingBy(
-                        QuizTag::getQuizId,
-                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())
-                ));
+                .collect(Collectors.groupingBy(QuizTag::getQuizId,
+                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())));
+
+        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> questionsByQuizIdMap = new HashMap<>();
+        if (!quizIds.isEmpty()) {
+            List<com.vuiquiz.quizwebsocket.model.Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
+            questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(com.vuiquiz.quizwebsocket.model.Question::getQuizId));
+        }
+        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> finalQuestionsMap = questionsByQuizIdMap;
 
 
         List<QuizDTO> quizDTOs = quizzes.stream()
@@ -329,8 +339,12 @@ public class QuizServiceImpl implements QuizService {
                     String creatorUsername = creatorUsernameMap.get(quiz.getCreatorId());
                     String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
-                    // Use a specialized mapper or adapt the existing one for list view
-                    return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl, tagNames); // Pass tags
+                    List<com.vuiquiz.quizwebsocket.model.Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
+                    int totalTimeLimitMs = quizQuestions.stream()
+                            .filter(q -> q.getTimeLimit() != null)
+                            .mapToInt(com.vuiquiz.quizwebsocket.model.Question::getTimeLimit)
+                            .sum();
+                    return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl, tagNames, totalTimeLimitMs);
                 })
                 .collect(Collectors.toList());
 
@@ -338,10 +352,8 @@ public class QuizServiceImpl implements QuizService {
     }
 
     // Mapper optimized for list view (no lobby video deserialization, no questions)
-    private QuizDTO mapQuizEntityToListDTO(Quiz quiz, String creatorUsername, String coverImageUrl, List<String> tagNames) {
-        if (quiz == null) {
-            return null;
-        }
+    private QuizDTO mapQuizEntityToListDTO(Quiz quiz, String creatorUsername, String coverImageUrl, List<String> tagNames, Integer totalTimeLimitMs) {
+        if (quiz == null) return null;
         return QuizDTO.builder()
                 .quizId(quiz.getQuizId())
                 .creatorId(quiz.getCreatorId())
@@ -353,19 +365,20 @@ public class QuizServiceImpl implements QuizService {
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
                 .cover(coverImageUrl)
-                .tags(tagNames) // Set tags here
+                .tags(tagNames)
                 .created(quiz.getCreatedAt() != null ? quiz.getCreatedAt().toInstant().toEpochMilli() : null)
                 .modified(quiz.getModifiedAt() != null ? quiz.getModifiedAt().toInstant().toEpochMilli() : null)
-                .questions(Collections.emptyList())
-                .isValid(true)
+                .questions(Collections.emptyList()) // For list DTO, questions are not detailed
+                .isValid(true) // Assuming valid if fetched
+                .totalQuizTimeLimitMs(totalTimeLimitMs) // Set the new field
                 .build();
     }
 
     // Main mapper method, now with a flag to load questions
-    private QuizDTO mapQuizEntityToDto(Quiz quiz, String creatorUsername, boolean loadQuestions, List<String> tagNames) {
-        if (quiz == null) {
-            return null;
-        }
+    private QuizDTO mapQuizEntityToDto(Quiz quiz, String creatorUsername,
+                                       boolean loadQuestions, List<String> tagNames,
+                                       boolean calculateTotalTimeLimit) {
+        if (quiz == null) return null;
 
         QuizDTO.QuizDTOBuilder builder = QuizDTO.builder()
                 .quizId(quiz.getQuizId())
@@ -377,37 +390,42 @@ public class QuizServiceImpl implements QuizService {
                 .status(quiz.getStatus())
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
-                .playAsGuest(null)
-                .type(quiz.getQuizTypeInfo())
-                .isValid(true)
-                .tags(tagNames); // Set the tags
+                .playAsGuest(null) // Placeholder, not directly from Quiz entity
+                .type(quiz.getQuizTypeInfo()) // Assuming this maps to some general 'type'
+                .isValid(true) // Assuming fetched quiz is valid
+                .tags(tagNames);
 
-        // ... (mapping for cover, lobby video, created, modified remains the same) ...
         if (quiz.getCoverImageId() != null) {
             imageStorageService.getImageStorageById(quiz.getCoverImageId())
                     .ifPresent(img -> builder.cover(img.getFilePath()));
         }
-        if (quiz.getLobbyVideoJson() != null && !quiz.getLobbyVideoJson().isEmpty()) {
+        if (StringUtils.hasText(quiz.getLobbyVideoJson())) {
             try {
                 builder.lobbyVideo(objectMapper.readValue(quiz.getLobbyVideoJson(), VideoDetailDTO.class));
             } catch (JsonProcessingException e) {
-                log.error("Error deserializing lobby video: {}", e.getMessage());
+                log.error("Error deserializing lobby video for quiz {}: {}", quiz.getQuizId(), e.getMessage());
             }
         }
         if (quiz.getCreatedAt() != null) builder.created(quiz.getCreatedAt().toInstant().toEpochMilli());
         if (quiz.getModifiedAt() != null) builder.modified(quiz.getModifiedAt().toInstant().toEpochMilli());
 
+        List<Question> quizQuestions = Collections.emptyList();
+        if (loadQuestions || calculateTotalTimeLimit) { // Fetch questions if needed for details or time calculation
+            quizQuestions = questionRepository.findByQuizIdOrderByPositionAsc(quiz.getQuizId());
+        }
+
         if (loadQuestions) {
-            List<Question> questions = questionRepository.findByQuizIdOrderByPositionAsc(quiz.getQuizId());
-            if (!CollectionUtils.isEmpty(questions)) {
-                builder.questions(questions.stream()
-                        .map(this::mapQuestionEntityToDto) // Use helper
-                        .collect(Collectors.toList()));
-            } else {
-                builder.questions(Collections.emptyList());
-            }
+            builder.questions(quizQuestions.stream().map(this::mapQuestionEntityToDto).collect(Collectors.toList()));
         } else {
-            builder.questions(Collections.emptyList()); // Explicitly set empty if not loading
+            builder.questions(Collections.emptyList());
+        }
+
+        if (calculateTotalTimeLimit) {
+            int totalTimeMs = quizQuestions.stream()
+                    .filter(q -> q.getTimeLimit() != null)
+                    .mapToInt(com.vuiquiz.quizwebsocket.model.Question::getTimeLimit)
+                    .sum();
+            builder.totalQuizTimeLimitMs(totalTimeMs);
         }
 
         return builder.build();

@@ -8,10 +8,10 @@ import com.vuiquiz.quizwebsocket.dto.SessionFinalizationDto;
 import com.vuiquiz.quizwebsocket.dto.SessionGameSlideDto;
 import com.vuiquiz.quizwebsocket.dto.SessionPlayerAnswerDto;
 import com.vuiquiz.quizwebsocket.dto.SessionPlayerDto;
-import com.vuiquiz.quizwebsocket.model.GameSession;
-import com.vuiquiz.quizwebsocket.model.GameSlide;
-import com.vuiquiz.quizwebsocket.model.Player;
-import com.vuiquiz.quizwebsocket.model.PlayerAnswer; // Added for Phase 4
+import com.vuiquiz.quizwebsocket.exception.ForbiddenAccessException;
+import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
+import com.vuiquiz.quizwebsocket.exception.UnauthorizedException;
+import com.vuiquiz.quizwebsocket.model.*;
 import com.vuiquiz.quizwebsocket.repository.*; // Assuming PlayerAnswerRepository is here
 import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
 import com.vuiquiz.quizwebsocket.service.GameResultService;
@@ -49,98 +49,107 @@ public class GameResultServiceImpl implements GameResultService {
     private final ObjectMapper objectMapper;
 
     @Override
-    @Transactional
+    @Transactional // This transaction now includes updating the Quiz
     public String saveSessionFinalization(SessionFinalizationDto sessionData) {
         log.info("Attempting to save session finalization for gamePin: {}", sessionData.getGamePin());
 
+        UUID authenticatedUserId = getAuthenticatedUserId();
+        if (authenticatedUserId == null) {
+            log.error("User performing finalize operation is not authenticated or user details not found.");
+            throw new UnauthorizedException("User must be authenticated to finalize a session.");
+        }
+
         // Phase 1: Save GameSession
         GameSession gameSessionEntity = mapDtoToGameSession(sessionData);
-        UUID hostIdToSet = determineAndValidateHostId(sessionData.getHostUserId());
-        gameSessionEntity.setHostId(hostIdToSet);
-        validateAndSetQuizId(gameSessionEntity, sessionData.getQuizId());
+        UUID actualHostId = determineAndValidateHostId(sessionData.getHostUserId(), authenticatedUserId);
+        gameSessionEntity.setHostId(actualHostId);
+
+        UUID quizUuid = validateAndSetQuizId(gameSessionEntity, sessionData.getQuizId()); // Get the validated Quiz UUID
+
         GameSession savedGameSession = gameSessionRepository.save(gameSessionEntity);
         log.info("Successfully saved GameSession with ID: {} for gamePin: {}", savedGameSession.getSessionId(), savedGameSession.getGamePin());
 
-        // --- Player ID Lookup Map Strategy ---
-        // Fetch all players for this session once and create a map for quick lookup.
-        Map<String, Player> playerClientIdToPlayerMap = sessionData.getPlayers().stream()
-                .map(playerDto -> mapDtoToPlayer(playerDto, savedGameSession.getSessionId()))
-                .peek(playerRepository::save) // Save each player as it's mapped
-                .collect(Collectors.toMap(Player::getClientId, Function.identity()));
-        log.info("Successfully mapped and saved {} players for session ID: {}", playerClientIdToPlayerMap.size(), savedGameSession.getSessionId());
-        // Note: The above saves players one by one within the stream's peek.
-        // If `saveAll` is preferred for players, map them first, then saveAll, then build the map from the saved list.
-        // For simplicity here, peek is used. For very large numbers of players, batching `saveAll` after mapping might be better.
+        Map<String, Player> playerClientIdToPlayerMap = savePlayers(sessionData.getPlayers(), savedGameSession.getSessionId());
 
-        // Phase 3 & 4: Save GameSlides and their PlayerAnswers
-        if (!CollectionUtils.isEmpty(sessionData.getGameSlides())) {
-            List<GameSlide> gameSlidesToSave = new ArrayList<>();
-            List<PlayerAnswer> allPlayerAnswersToSave = new ArrayList<>();
+        saveGameSlidesAndAnswers(sessionData.getGameSlides(), savedGameSession.getSessionId(), playerClientIdToPlayerMap);
 
-            for (SessionGameSlideDto slideDto : sessionData.getGameSlides()) {
-                GameSlide slideEntity = mapDtoToGameSlide(slideDto, savedGameSession.getSessionId());
-                // It's important to save the slideEntity first to get its generated slideId
-                GameSlide savedSlideEntity = gameSlideRepository.save(slideEntity);
-                // gameSlidesToSave.add(savedSlideEntity); // Collect if batch save of slides is done at the end
+        // --- TWEAK 1: Update Quiz play_count and status ---
+        try {
+            Quiz quizToUpdate = quizRepository.findById(quizUuid)
+                    .orElseThrow(() -> new ResourceNotFoundException("Quiz", "id", quizUuid)); // Should not happen if validated above
 
-                if (!CollectionUtils.isEmpty(slideDto.getPlayerAnswers())) {
-                    for (SessionPlayerAnswerDto answerDto : slideDto.getPlayerAnswers()) {
-                        Player currentPlayer = playerClientIdToPlayerMap.get(answerDto.getClientId());
-                        if (currentPlayer != null) {
-                            PlayerAnswer answerEntity = mapDtoToPlayerAnswer(answerDto, savedSlideEntity.getSlideId(), currentPlayer.getPlayerId());
-                            allPlayerAnswersToSave.add(answerEntity);
-                        } else {
-                            log.warn("Could not find player with clientId: {} for an answer on slideIndex: {}. Skipping this answer.",
-                                    answerDto.getClientId(), slideDto.getSlideIndex());
-                        }
-                    }
-                }
+            quizToUpdate.setPlayCount(quizToUpdate.getPlayCount() + 1);
+            if ("DRAFT".equalsIgnoreCase(quizToUpdate.getStatus())) {
+                quizToUpdate.setStatus("PUBLISHED");
+                log.info("Quiz ID: {} status updated from DRAFT to PUBLISHED.", quizUuid);
             }
-            // gameSlideRepository.saveAll(gameSlidesToSave); // If collecting and saving slides at the end
-            if (!allPlayerAnswersToSave.isEmpty()) {
-                playerAnswerRepository.saveAll(allPlayerAnswersToSave);
-                log.info("Successfully saved {} player answers for session ID: {}", allPlayerAnswersToSave.size(), savedGameSession.getSessionId());
-            }
-        } else {
-            log.info("No game slides found in the payload for session ID: {}", savedGameSession.getSessionId());
+            quizRepository.save(quizToUpdate);
+            log.info("Quiz ID: {} play_count incremented to {}.", quizUuid, quizToUpdate.getPlayCount());
+        } catch (Exception e) {
+            // Log the error but don't let it fail the whole session finalization if this part fails.
+            // This is a secondary operation. Alternatively, if it MUST succeed, remove the try-catch.
+            log.error("Error updating play_count or status for Quiz ID {}: {}", quizUuid, e.getMessage(), e);
         }
+        // --- END TWEAK 1 ---
 
         return savedGameSession.getSessionId().toString();
     }
 
-    private UUID determineAndValidateHostId(String hostUserIdFromDto) {
+    private UUID determineAndValidateHostId(String hostUserIdFromDto, UUID authenticatedUserId) {
         UUID hostIdToSet;
-        try {
-            UUID parsedHostIdFromDto = UUID.fromString(hostUserIdFromDto);
-            if (userAccountRepository.existsById(parsedHostIdFromDto)) {
-                hostIdToSet = parsedHostIdFromDto;
-                log.debug("Successfully validated hostUserId from DTO: {}", hostIdToSet);
-            } else {
-                log.warn("hostUserId from DTO '{}' (parsed as UUID '{}') does not exist. Falling back to authenticated user.", hostUserIdFromDto, parsedHostIdFromDto);
-                hostIdToSet = getAuthenticatedUserId();
+        boolean dtoHostIdValidAndExists = false;
+        UUID parsedHostIdFromDto = null;
+
+        if (StringUtils.hasText(hostUserIdFromDto)) {
+            try {
+                parsedHostIdFromDto = UUID.fromString(hostUserIdFromDto);
+                if (userAccountRepository.existsById(parsedHostIdFromDto)) {
+                    dtoHostIdValidAndExists = true;
+                } else {
+                    log.warn("hostUserId from DTO '{}' (parsed as UUID '{}') does not exist in user_account table.", hostUserIdFromDto, parsedHostIdFromDto);
+                }
+            } catch (IllegalArgumentException e) {
+                log.warn("hostUserId from DTO '{}' is not a valid UUID format. Error: {}", hostUserIdFromDto, e.getMessage());
             }
-        } catch (IllegalArgumentException e) {
-            log.warn("hostUserId from DTO '{}' is not a valid UUID. Falling back to authenticated user. Error: {}", hostUserIdFromDto, e.getMessage());
-            hostIdToSet = getAuthenticatedUserId();
+        } else {
+            log.warn("hostUserId from DTO is blank or null.");
+        }
+
+        if (dtoHostIdValidAndExists) {
+            if (!parsedHostIdFromDto.equals(authenticatedUserId)) {
+                log.error("Forbidden: Authenticated user {} attempted to finalize session for hostUserId {}.", authenticatedUserId, parsedHostIdFromDto);
+                throw new ForbiddenAccessException("Authenticated user is not authorized to finalize a session for the specified host user.");
+            }
+            hostIdToSet = parsedHostIdFromDto;
+            log.info("HostUserId from DTO ({}) matches authenticated user. Using this ID.", hostIdToSet);
+        } else {
+            log.warn("Falling back to authenticated user ID ({}) as the host for this session.", authenticatedUserId);
+            hostIdToSet = authenticatedUserId;
         }
 
         if (hostIdToSet == null) {
-            log.error("Could not determine host ID. Authenticated user ID is null, and DTO value was invalid/not found.");
-            throw new IllegalStateException("Host ID could not be determined. Authenticated user is required if DTO value is invalid.");
+            log.error("Critical error: Host ID could not be determined even after fallback. Authenticated user ID might be null.");
+            throw new IllegalStateException("Host ID could not be determined.");
         }
         return hostIdToSet;
     }
 
-    private void validateAndSetQuizId(GameSession gameSession, String quizIdFromDto) {
+    // Modified to return the UUID for convenience
+    private UUID validateAndSetQuizId(GameSession gameSession, String quizIdFromDto) {
+        if (!StringUtils.hasText(quizIdFromDto)) {
+            log.error("quizId is missing in the request payload for gamePin: {}", gameSession.getGamePin());
+            throw new IllegalArgumentException("quizId cannot be null or empty.");
+        }
         try {
             UUID quizId = UUID.fromString(quizIdFromDto);
             if (!quizRepository.existsById(quizId)) {
-                log.error("Quiz with ID {} not found.", quizId);
-                throw new IllegalArgumentException("Quiz not found for ID: " + quizId);
+                log.error("Quiz with ID {} not found for gamePin: {}", quizId, gameSession.getGamePin());
+                throw new ResourceNotFoundException("Quiz", "id", quizIdFromDto);
             }
             gameSession.setQuizId(quizId);
+            return quizId; // Return the validated UUID
         } catch (IllegalArgumentException e) {
-            log.error("Invalid quizId format: {}. Details: {}", quizIdFromDto, e.getMessage());
+            log.error("Invalid quizId format: {} for gamePin: {}. Details: {}", quizIdFromDto, gameSession.getGamePin(), e.getMessage());
             throw new IllegalArgumentException("Invalid quizId format: " + quizIdFromDto);
         }
     }
@@ -155,6 +164,49 @@ public class GameResultServiceImpl implements GameResultService {
         }
         log.warn("Could not retrieve authenticated user ID. No authenticated principal found or principal is not UserDetailsImpl.");
         return null;
+    }
+
+    private Map<String, Player> savePlayers(List<SessionPlayerDto> playerDtos, UUID sessionId) {
+        if (CollectionUtils.isEmpty(playerDtos)) {
+            log.info("No players found in the payload for session ID: {}", sessionId);
+            return Map.of();
+        }
+        List<Player> playersToSave = new ArrayList<>();
+        for (SessionPlayerDto playerDto : playerDtos) {
+            Player playerEntity = mapDtoToPlayer(playerDto, sessionId);
+            playersToSave.add(playerEntity);
+        }
+        List<Player> savedPlayers = playerRepository.saveAll(playersToSave);
+        log.info("Successfully saved {} players for session ID: {}", savedPlayers.size(), sessionId);
+        return savedPlayers.stream().collect(Collectors.toMap(Player::getClientId, Function.identity()));
+    }
+
+    private void saveGameSlidesAndAnswers(List<SessionGameSlideDto> gameSlideDtos, UUID sessionId, Map<String, Player> playerClientIdToPlayerMap) {
+        if (CollectionUtils.isEmpty(gameSlideDtos)) {
+            log.info("No game slides found in the payload for session ID: {}", sessionId);
+            return;
+        }
+        List<PlayerAnswer> allPlayerAnswersToSave = new ArrayList<>();
+        for (SessionGameSlideDto slideDto : gameSlideDtos) {
+            GameSlide slideEntity = mapDtoToGameSlide(slideDto, sessionId);
+            GameSlide savedSlideEntity = gameSlideRepository.save(slideEntity);
+            if (!CollectionUtils.isEmpty(slideDto.getPlayerAnswers())) {
+                for (SessionPlayerAnswerDto answerDto : slideDto.getPlayerAnswers()) {
+                    Player currentPlayer = playerClientIdToPlayerMap.get(answerDto.getClientId());
+                    if (currentPlayer != null) {
+                        PlayerAnswer answerEntity = mapDtoToPlayerAnswer(answerDto, savedSlideEntity.getSlideId(), currentPlayer.getPlayerId());
+                        allPlayerAnswersToSave.add(answerEntity);
+                    } else {
+                        log.warn("Could not find player with clientId: {} for an answer on slideIndex: {}. Skipping this answer.",
+                                answerDto.getClientId(), slideDto.getSlideIndex());
+                    }
+                }
+            }
+        }
+        if (!allPlayerAnswersToSave.isEmpty()) {
+            playerAnswerRepository.saveAll(allPlayerAnswersToSave);
+            log.info("Successfully saved {} player answers for session ID: {}", allPlayerAnswersToSave.size(), sessionId);
+        }
     }
 
     private GameSession mapDtoToGameSession(SessionFinalizationDto dto) {
