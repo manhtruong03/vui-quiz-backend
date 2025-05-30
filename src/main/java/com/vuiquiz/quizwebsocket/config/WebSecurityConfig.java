@@ -76,11 +76,14 @@ public class WebSecurityConfig {
                                 .requestMatchers("/ws-quiz/**").permitAll()
                                 .requestMatchers("/api/session/create").permitAll()
                                 .requestMatchers("/api/session/join/**").permitAll()
-                                .requestMatchers("/api/session/finalize").authenticated() // Add this for the new endpoint
+                                .requestMatchers("/api/session/finalize").authenticated()
                                 .requestMatchers("/api/reports/**").permitAll()
                                 .requestMatchers("/api/users/sessions").authenticated()
                                 .requestMatchers("/error").permitAll()
-                                .requestMatchers(SWAGGER_WHITELIST).permitAll() // Add Swagger whitelist here
+                                .requestMatchers(SWAGGER_WHITELIST).permitAll()
+                                // Add these lines for Stage 1
+                                .requestMatchers("/files/images/**").permitAll() // Public access to images
+                                .requestMatchers("/api/upload-test-image").permitAll() // Allow test uploads
                                 .anyRequest().authenticated()
                 );
 
