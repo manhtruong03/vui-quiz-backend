@@ -34,10 +34,10 @@ public class ImageStorage {
     @Column(name = "creator_id") // Foreign key stored as UUID
     private UUID creatorId;
 
-    @Column(name = "file_name", nullable = false, length = 255)
+    @Column(name = "file_name", nullable = false, length = 255) // This should be the ORIGINAL filename
     private String fileName;
 
-    @Column(name = "file_path", nullable = false, unique = true, length = 512)
+    @Column(name = "file_path", nullable = false, unique = true, length = 512) // This will store the UNIQUE stored filename (e.g., UUID.ext)
     private String filePath;
 
     @Column(name = "content_type", nullable = false, length = 100)
