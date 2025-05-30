@@ -109,4 +109,44 @@ public class UserAccountServiceImpl implements UserAccountService {
         user.setAccountPassword(passwordEncoder.encode(newPassword));
         return userAccountRepository.save(user);
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean canUserUpload(UUID userId, long fileSize) {
+        UserAccount user = userAccountRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("UserAccount", "id", userId));
+
+        if (fileSize < 0) {
+            throw new IllegalArgumentException("File size cannot be negative.");
+        }
+        // storageLimit might be null if not set on older accounts or if schema doesn't enforce NOT NULL yet.
+        // Default to a very high limit or handle as per business rules if null.
+        // For this implementation, we assume storageLimit is NOT NULL and has a default.
+        return (user.getStorageUsed() + fileSize) <= user.getStorageLimit();
+    }
+
+    @Override
+    @Transactional
+    public UserAccount updateUserStorageUsed(UUID userId, long fileSizeDelta) {
+        UserAccount user = userAccountRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("UserAccount", "id", userId));
+
+        long newStorageUsed = user.getStorageUsed() + fileSizeDelta;
+        if (newStorageUsed < 0) {
+            // This case should ideally not happen if logic is correct (e.g., deleting a non-existent file's size)
+            // Log a warning, or throw an exception, or cap at 0.
+            // For robustness, let's cap at 0 and log.
+            newStorageUsed = 0;
+            // Consider logging this anomaly:
+            // log.warn("Attempted to set negative storage for user {}. Capped at 0. Delta was: {}", userId, fileSizeDelta);
+        }
+
+        // Optional: Re-check against limit if adding storage, though `canUserUpload` should prevent exceeding.
+        // if (fileSizeDelta > 0 && newStorageUsed > user.getStorageLimit()) {
+        //     throw new StorageQuotaExceededException("Updating storage would exceed user's limit.");
+        // }
+
+        user.setStorageUsed(newStorageUsed);
+        return userAccountRepository.save(user);
+    }
 }

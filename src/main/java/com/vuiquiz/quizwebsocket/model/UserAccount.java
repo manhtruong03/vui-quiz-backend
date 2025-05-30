@@ -59,6 +59,10 @@ public class UserAccount {
     @Column(name = "deleted_at", columnDefinition = "TIMESTAMP WITH TIME ZONE")
     private OffsetDateTime deletedAt;
 
+    @Column(name = "storage_limit", nullable = false)
+    @Builder.Default
+    private Long storageLimit = 50 * 1024 * 1024L;
+
     @PrePersist
     protected void onCreate() {
         createdAt = OffsetDateTime.now();
