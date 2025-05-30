@@ -7,14 +7,13 @@ import com.vuiquiz.quizwebsocket.dto.ChoiceDTO;
 import com.vuiquiz.quizwebsocket.dto.QuestionDTO;
 import com.vuiquiz.quizwebsocket.dto.QuizDTO;
 import com.vuiquiz.quizwebsocket.dto.VideoDetailDTO;
+import com.vuiquiz.quizwebsocket.exception.FileStorageException;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
+import com.vuiquiz.quizwebsocket.exception.StorageQuotaExceededException;
 import com.vuiquiz.quizwebsocket.model.*;
 import com.vuiquiz.quizwebsocket.repository.*;
 import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
-import com.vuiquiz.quizwebsocket.service.ImageStorageService;
-import com.vuiquiz.quizwebsocket.service.QuizService;
-import com.vuiquiz.quizwebsocket.service.QuizTagService;
-import com.vuiquiz.quizwebsocket.service.TagService;
+import com.vuiquiz.quizwebsocket.service.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -26,6 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -37,6 +37,7 @@ public class QuizServiceImpl implements QuizService {
     private final QuizRepository quizRepository;
     private final QuestionRepository questionRepository;
     private final ImageStorageService imageStorageService;
+    private final FileStorageService fileStorageService;
     private final ObjectMapper objectMapper;
     private final UserAccountRepository userAccountRepository;
     private final ImageStorageRepository imageStorageRepository;
@@ -44,22 +45,24 @@ public class QuizServiceImpl implements QuizService {
     private final QuizTagService quizTagService; // Inject QuizTagService
     private final QuizTagRepository quizTagRepository; // Inject Repositories for batch fetching
     private final TagRepository tagRepository;         // Inject Repositories for batch fetching
+    private final UserAccountService userAccountService;
 
 
     @Autowired
     public QuizServiceImpl(QuizRepository quizRepository,
                            QuestionRepository questionRepository,
-                           ImageStorageService imageStorageService,
+                           ImageStorageService imageStorageService, FileStorageService fileStorageService,
                            ObjectMapper objectMapper,
                            UserAccountRepository userAccountRepository,
                            ImageStorageRepository imageStorageRepository,
                            TagService tagService,               // Add to constructor
                            QuizTagService quizTagService,         // Add to constructor
                            QuizTagRepository quizTagRepository,   // Add to constructor
-                           TagRepository tagRepository) {           // Add to constructor
+                           TagRepository tagRepository, UserAccountService userAccountService) {           // Add to constructor
         this.quizRepository = quizRepository;
         this.questionRepository = questionRepository;
         this.imageStorageService = imageStorageService;
+        this.fileStorageService = fileStorageService;
         this.objectMapper = objectMapper;
         this.userAccountRepository = userAccountRepository;
         this.imageStorageRepository = imageStorageRepository;
@@ -67,28 +70,50 @@ public class QuizServiceImpl implements QuizService {
         this.quizTagService = quizTagService;         // Assign
         this.quizTagRepository = quizTagRepository;   // Assign
         this.tagRepository = tagRepository;           // Assign
+        this.userAccountService = userAccountService;
     }
 
     @Override
     @Transactional
-    public QuizDTO createQuiz(QuizDTO quizDto, UUID creatorId) {
-        // ... (createQuiz implementation from Phase 3 remains the same)
-        // The response from createQuiz in Phase 3 intentionally returns empty questions.
-        // This behavior is fine for create, as the primary goal is creation.
-        // The full details are retrieved via getQuizDetailsById.
+    public QuizDTO createQuiz(QuizDTO quizDto, UUID creatorId,
+                              MultipartFile coverImageFile, List<MultipartFile> questionImageFiles) {
+
+        long totalUploadSize = 0;
+        if (coverImageFile != null && !coverImageFile.isEmpty()) {
+            totalUploadSize += coverImageFile.getSize();
+        }
+        if (questionImageFiles != null) {
+            for (MultipartFile qFile : questionImageFiles) {
+                if (qFile != null && !qFile.isEmpty()) {
+                    totalUploadSize += qFile.getSize();
+                }
+            }
+        }
+
+        // 0. Check total storage quota FIRST
+        if (totalUploadSize > 0) {
+            if (!userAccountService.canUserUpload(creatorId, totalUploadSize)) {
+                throw new StorageQuotaExceededException("Upload exceeds storage quota. Required: " + totalUploadSize + " bytes.");
+            }
+        }
+
         Quiz quiz = new Quiz();
+        // ... (map quizDto to quiz entity: creatorId, title, description, etc.)
         quiz.setCreatorId(creatorId);
         quiz.setTitle(quizDto.getTitle());
         quiz.setDescription(quizDto.getDescription());
         quiz.setVisibility(quizDto.getVisibility() != null ? quizDto.getVisibility() : 0);
-        quiz.setStatus(quizDto.getStatus() != null && !quizDto.getStatus().trim().isEmpty() ? quizDto.getStatus() : "DRAFT");
+        quiz.setStatus(StringUtils.hasText(quizDto.getStatus()) ? quizDto.getStatus() : "DRAFT");
         quiz.setQuizTypeInfo(quizDto.getQuizType());
 
-        if (quizDto.getCover() != null && !quizDto.getCover().trim().isEmpty()) {
-            ImageStorage coverImage = imageStorageService.findOrCreateByFilePath(quizDto.getCover(), creatorId);
-            if (coverImage != null) {
-                quiz.setCoverImageId(coverImage.getImageId());
-            }
+
+        // 1. Handle Cover Image (if present)
+        UUID savedCoverImageId = null;
+        if (coverImageFile != null && !coverImageFile.isEmpty()) {
+            String storedCoverFileName = fileStorageService.storeFile(coverImageFile);
+            ImageStorage coverImageRecord = imageStorageService.createImageRecord(coverImageFile, storedCoverFileName, creatorId);
+            quiz.setCoverImageId(coverImageRecord.getImageId());
+            savedCoverImageId = coverImageRecord.getImageId(); // Keep track if successful
         }
 
         if (quizDto.getLobbyVideo() != null) {
@@ -100,77 +125,64 @@ public class QuizServiceImpl implements QuizService {
             }
         }
 
+        // ... (lobbyVideoJson handling)
+
         Quiz savedQuiz = quizRepository.save(quiz);
         UUID persistedQuizId = savedQuiz.getQuizId();
         int questionCount = 0;
+        List<UUID> savedQuestionImageIds = new ArrayList<>(); // Keep track
 
         if (!CollectionUtils.isEmpty(quizDto.getQuestions())) {
             List<Question> questionsToSave = new ArrayList<>();
             for (int i = 0; i < quizDto.getQuestions().size(); i++) {
                 QuestionDTO questionDtoInternal = quizDto.getQuestions().get(i);
-
-                // --- VALIDATE REQUIRED FIELDS MANUALLY (Since @Valid might not catch everything if position is null now) ---
-                // Example: Ensure title is still provided even if position is optional now
-                if (questionDtoInternal.getTitle() == null || questionDtoInternal.getTitle().isBlank()) {
-                    log.warn("Skipping question at index {} due to missing title for quiz '{}'", i, quizDto.getTitle());
-                    continue; // Skip this question DTO
+                if (questionDtoInternal.getTitle() == null || questionDtoInternal.getTitle().isBlank() ||
+                        questionDtoInternal.getType() == null || questionDtoInternal.getType().isBlank()) {
+                    log.warn("Skipping question at index {} due to missing title or type for quiz '{}'", i, quizDto.getTitle());
+                    continue;
                 }
-                if (questionDtoInternal.getType() == null || questionDtoInternal.getType().isBlank()) {
-                    log.warn("Skipping question at index {} due to missing type for quiz '{}'", i, quizDto.getTitle());
-                    continue; // Skip this question DTO
-                }
-                // Add checks for other mandatory fields per question type if necessary
-                // --- END MANUAL VALIDATION ---
-
 
                 Question question = new Question();
                 question.setQuizId(persistedQuizId);
+                // ... (map other question DTO fields to question entity)
                 question.setQuestionType(questionDtoInternal.getType());
                 question.setQuestionText(questionDtoInternal.getTitle());
                 question.setDescriptionText(questionDtoInternal.getDescription());
+                question.setTimeLimit(questionDtoInternal.getTime() != null ? questionDtoInternal.getTime() : 0);
+                question.setPointsMultiplier(questionDtoInternal.getPointsMultiplier() != null ? questionDtoInternal.getPointsMultiplier() : 0);
+                question.setPosition(questionDtoInternal.getPosition() != null ? questionDtoInternal.getPosition() : i);
 
-                Integer timeLimit = questionDtoInternal.getTime();
-                question.setTimeLimit(timeLimit != null ? timeLimit : 0);
 
-                Integer pointsMultiplier = questionDtoInternal.getPointsMultiplier();
-                question.setPointsMultiplier(pointsMultiplier != null ? pointsMultiplier : 0); // Default to 0 if null
-
-                // --- Assign Position ---
-                if (questionDtoInternal.getPosition() != null) {
-                    // Position provided in DTO, use it (validation @PositiveOrZero still applies)
-                    question.setPosition(questionDtoInternal.getPosition());
-                } else {
-                    // Position not provided, assign based on array index
-                    question.setPosition(i);
-                }
-                // --- End Assign Position ---
-
-                if (questionDtoInternal.getImage() != null && !questionDtoInternal.getImage().trim().isEmpty()) {
-                    ImageStorage questionImage = imageStorageService.findOrCreateByFilePath(questionDtoInternal.getImage(), creatorId);
-                    if (questionImage != null) {
-                        question.setImageId(questionImage.getImageId());
+                // 2. Handle Question Image
+                if (questionImageFiles != null && i < questionImageFiles.size()) {
+                    MultipartFile questionImageFile = questionImageFiles.get(i);
+                    if (questionImageFile != null && !questionImageFile.isEmpty()) {
+                        String storedQuestionImageName = fileStorageService.storeFile(questionImageFile);
+                        ImageStorage questionImageRecord = imageStorageService.createImageRecord(questionImageFile, storedQuestionImageName, creatorId);
+                        question.setImageId(questionImageRecord.getImageId());
+                        savedQuestionImageIds.add(questionImageRecord.getImageId()); // Keep track
                     }
                 }
+                // ... (map video, choices JSON for question)
 
                 if (questionDtoInternal.getVideo() != null) {
                     try {
                         question.setVideoContentJson(objectMapper.writeValueAsString(questionDtoInternal.getVideo()));
                     } catch (JsonProcessingException e) {
-                        log.error("Error serializing question video DTO to JSON for question title '{}': {}", questionDtoInternal.getTitle(), e.getMessage());
-                        question.setVideoContentJson(null);
+                        log.error("Error serializing question video DTO: {}", e.getMessage());
                     }
                 }
-
                 if (!CollectionUtils.isEmpty(questionDtoInternal.getChoices())) {
                     try {
                         question.setAnswerDataJson(objectMapper.writeValueAsString(questionDtoInternal.getChoices()));
                     } catch (JsonProcessingException e) {
-                        log.error("Error serializing question choices DTO to JSON for question title '{}': {}", questionDtoInternal.getTitle(), e.getMessage());
+                        log.error("Error serializing question choices DTO: {}", e.getMessage());
                         question.setAnswerDataJson("[]");
                     }
                 } else {
                     question.setAnswerDataJson("[]");
                 }
+
                 questionsToSave.add(question);
                 questionCount++;
             }
@@ -179,33 +191,41 @@ public class QuizServiceImpl implements QuizService {
             }
         }
 
-        // --- NEW: Handle Tags ---
+        // Handle Tags (existing logic)
         if (!CollectionUtils.isEmpty(quizDto.getTags())) {
             for (String tagName : quizDto.getTags()) {
                 try {
                     Tag tag = tagService.findOrCreateTagByName(tagName);
                     quizTagService.addTagToQuiz(persistedQuizId, tag.getTagId());
-                } catch (IllegalArgumentException e) {
-                    log.warn("Skipping invalid tag name '{}' for quiz '{}': {}", tagName, quizDto.getTitle(), e.getMessage());
-                } catch (ResourceNotFoundException e) {
-                    log.error("Error associating tag '{}' for quiz '{}', tag/quiz likely not found: {}", tagName, quizDto.getTitle(), e.getMessage());
-                    // Or rethrow / handle differently
+                } catch (Exception e) {
+                    log.warn("Skipping tag '{}' for quiz '{}' due to error: {}", tagName, quizDto.getTitle(), e.getMessage());
                 }
             }
         }
 
+
         savedQuiz.setQuestionCount(questionCount);
         Quiz finalSavedQuiz = quizRepository.save(savedQuiz);
 
-        String creatorUsername = userAccountRepository.findById(finalSavedQuiz.getCreatorId())
-                .map(UserAccount::getUsername)
-                .orElse(null);
+        // 3. Update user storage used AFTER all DB operations for quiz/questions are successful
+        if (totalUploadSize > 0) {
+            try {
+                userAccountService.updateUserStorageUsed(creatorId, totalUploadSize);
+            } catch (Exception e) {
+                // This is tricky. Quiz and images are saved. Storage update failed.
+                // Option 1: Log critical error, manual reconciliation needed. (Simplest for now)
+                // Option 2: Try to roll back image storage (delete files, delete ImageStorage records) - complex.
+                // Option 3: For a truly atomic operation, this might require distributed transaction concepts or a saga pattern,
+                //           which is overkill for this stage.
+                log.error("CRITICAL: Quiz {} created and images stored, but failed to update user {} storage by {}. Manual reconciliation needed. Error: {}",
+                        finalSavedQuiz.getQuizId(), creatorId, totalUploadSize, e.getMessage());
+                // For now, we let the quiz creation succeed and log the storage update issue.
+            }
+        }
 
-        QuizDTO responseDto = mapQuizEntityToDto(
-                finalSavedQuiz, creatorUsername,
-                false, Collections.emptyList(), false
-        ); // Pass empty tags list for create response
-        return responseDto;
+        return mapQuizEntityToDto(finalSavedQuiz,
+                userAccountRepository.findById(creatorId).map(UserAccount::getUsername).orElse(null),
+                false, getTagNamesForQuiz(finalSavedQuiz.getQuizId()), false);
     }
 
     @Override
@@ -231,7 +251,7 @@ public class QuizServiceImpl implements QuizService {
             return Collections.emptyList();
         }
         Set<UUID> tagIds = quizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
-        List<Tag> tags = tagRepository.findAllById(tagIds);
+        List<Tag> tags = tagRepository.findAllById(tagIds); // Make sure tagRepository is injected
         return tags.stream().map(Tag::getName).collect(Collectors.toList());
     }
 
@@ -269,14 +289,14 @@ public class QuizServiceImpl implements QuizService {
 
         // --- TWEAK 2: Fetch questions for each quiz to calculate total time limit ---
         // This can lead to N+1 if not handled carefully. Fetching all questions for all quizzes on the page:
-        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> questionsByQuizIdMap = new HashMap<>();
+        Map<UUID, List<Question>> questionsByQuizIdMap = new HashMap<>();
         if (!quizIds.isEmpty()) {
-            List<com.vuiquiz.quizwebsocket.model.Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
-            questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(com.vuiquiz.quizwebsocket.model.Question::getQuizId));
+            List<Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
+            questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(Question::getQuizId));
         }
         // --- END TWEAK 2 PREPARATION ---
 
-        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> finalQuestionsMap = questionsByQuizIdMap; // Effective final for lambda
+        Map<UUID, List<Question>> finalQuestionsMap = questionsByQuizIdMap; // Effective final for lambda
 
         // 4. Map Quiz entities to QuizDTOs
         List<QuizDTO> quizDTOs = quizzes.stream()
@@ -285,10 +305,10 @@ public class QuizServiceImpl implements QuizService {
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
 
                     // --- TWEAK 2: Calculate total time limit ---
-                    List<com.vuiquiz.quizwebsocket.model.Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
+                    List<Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
                     int totalTimeLimitMs = quizQuestions.stream()
                             .filter(q -> q.getTimeLimit() != null)
-                            .mapToInt(com.vuiquiz.quizwebsocket.model.Question::getTimeLimit)
+                            .mapToInt(Question::getTimeLimit)
                             .sum();
                     // --- END TWEAK 2 CALCULATION ---
 
@@ -326,12 +346,12 @@ public class QuizServiceImpl implements QuizService {
                 .collect(Collectors.groupingBy(QuizTag::getQuizId,
                         Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())));
 
-        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> questionsByQuizIdMap = new HashMap<>();
+        Map<UUID, List<Question>> questionsByQuizIdMap = new HashMap<>();
         if (!quizIds.isEmpty()) {
-            List<com.vuiquiz.quizwebsocket.model.Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
-            questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(com.vuiquiz.quizwebsocket.model.Question::getQuizId));
+            List<Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
+            questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(Question::getQuizId));
         }
-        Map<UUID, List<com.vuiquiz.quizwebsocket.model.Question>> finalQuestionsMap = questionsByQuizIdMap;
+        Map<UUID, List<Question>> finalQuestionsMap = questionsByQuizIdMap;
 
 
         List<QuizDTO> quizDTOs = quizzes.stream()
@@ -339,10 +359,10 @@ public class QuizServiceImpl implements QuizService {
                     String creatorUsername = creatorUsernameMap.get(quiz.getCreatorId());
                     String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
-                    List<com.vuiquiz.quizwebsocket.model.Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
+                    List<Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
                     int totalTimeLimitMs = quizQuestions.stream()
                             .filter(q -> q.getTimeLimit() != null)
-                            .mapToInt(com.vuiquiz.quizwebsocket.model.Question::getTimeLimit)
+                            .mapToInt(Question::getTimeLimit)
                             .sum();
                     return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl, tagNames, totalTimeLimitMs);
                 })
@@ -390,15 +410,14 @@ public class QuizServiceImpl implements QuizService {
                 .status(quiz.getStatus())
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
-                .playAsGuest(null) // Placeholder, not directly from Quiz entity
-                .type(quiz.getQuizTypeInfo()) // Assuming this maps to some general 'type'
-                .isValid(true) // Assuming fetched quiz is valid
+                .isValid(true)
                 .tags(tagNames);
 
+        // MODIFICATION: Populate cover URL from coverImageId
         if (quiz.getCoverImageId() != null) {
-            imageStorageService.getImageStorageById(quiz.getCoverImageId())
-                    .ifPresent(img -> builder.cover(img.getFilePath()));
+            builder.cover(imageStorageService.getPublicUrl(quiz.getCoverImageId()));
         }
+
         if (StringUtils.hasText(quiz.getLobbyVideoJson())) {
             try {
                 builder.lobbyVideo(objectMapper.readValue(quiz.getLobbyVideoJson(), VideoDetailDTO.class));
@@ -410,12 +429,16 @@ public class QuizServiceImpl implements QuizService {
         if (quiz.getModifiedAt() != null) builder.modified(quiz.getModifiedAt().toInstant().toEpochMilli());
 
         List<Question> quizQuestions = Collections.emptyList();
-        if (loadQuestions || calculateTotalTimeLimit) { // Fetch questions if needed for details or time calculation
+        if (loadQuestions || calculateTotalTimeLimit) {
             quizQuestions = questionRepository.findByQuizIdOrderByPositionAsc(quiz.getQuizId());
         }
 
         if (loadQuestions) {
-            builder.questions(quizQuestions.stream().map(this::mapQuestionEntityToDto).collect(Collectors.toList()));
+            // Pass ImageStorageService to mapQuestionEntityToDto if it needs to resolve URLs internally
+            // Or, resolve URLs here if mapQuestionEntityToDto only takes basic Question entity
+            builder.questions(quizQuestions.stream()
+                    .map(this::mapQuestionEntityToDto) // This DTO mapper also needs update
+                    .collect(Collectors.toList()));
         } else {
             builder.questions(Collections.emptyList());
         }
@@ -423,33 +446,30 @@ public class QuizServiceImpl implements QuizService {
         if (calculateTotalTimeLimit) {
             int totalTimeMs = quizQuestions.stream()
                     .filter(q -> q.getTimeLimit() != null)
-                    .mapToInt(com.vuiquiz.quizwebsocket.model.Question::getTimeLimit)
+                    .mapToInt(Question::getTimeLimit)
                     .sum();
             builder.totalQuizTimeLimitMs(totalTimeMs);
         }
-
         return builder.build();
     }
 
     // Helper method to map Question entity to QuestionDTO
     private QuestionDTO mapQuestionEntityToDto(Question question) {
-        if (question == null) {
-            return null;
-        }
+        if (question == null) return null;
 
         QuestionDTO.QuestionDTOBuilder builder = QuestionDTO.builder()
                 .id(question.getQuestionId())
                 .type(question.getQuestionType())
-                .title(question.getQuestionText()) // Map Question.questionText to DTO.title
-                .description(question.getDescriptionText()) // Map Question.descriptionText to DTO.description
+                .title(question.getQuestionText())
+                .description(question.getDescriptionText())
                 .time(question.getTimeLimit())
                 .pointsMultiplier(question.getPointsMultiplier())
                 .position(question.getPosition())
-                .media(Collections.emptyList()); // Assuming media is not yet handled, default to empty
+                .media(Collections.emptyList()); // Default
 
+        // MODIFICATION: Populate image URL from imageId
         if (question.getImageId() != null) {
-            imageStorageService.getImageStorageById(question.getImageId())
-                    .ifPresent(img -> builder.image(img.getFilePath()));
+            builder.image(imageStorageService.getPublicUrl(question.getImageId()));
         }
 
         if (question.getVideoContentJson() != null && !question.getVideoContentJson().isEmpty()) {
@@ -457,23 +477,21 @@ public class QuizServiceImpl implements QuizService {
                 VideoDetailDTO videoDto = objectMapper.readValue(question.getVideoContentJson(), VideoDetailDTO.class);
                 builder.video(videoDto);
             } catch (JsonProcessingException e) {
-                log.error("Error deserializing question video JSON to DTO for questionId '{}': {}", question.getQuestionId(), e.getMessage());
+                log.error("Error deserializing question video JSON: {}", e.getMessage());
             }
         }
 
         if (question.getAnswerDataJson() != null && !question.getAnswerDataJson().isEmpty()) {
             try {
-                List<ChoiceDTO> choices = objectMapper.readValue(question.getAnswerDataJson(), new TypeReference<List<ChoiceDTO>>() {
-                });
+                List<ChoiceDTO> choices = objectMapper.readValue(question.getAnswerDataJson(), new TypeReference<List<ChoiceDTO>>() {});
                 builder.choices(choices);
             } catch (JsonProcessingException e) {
-                log.error("Error deserializing question choices JSON to DTO for questionId '{}': {}", question.getQuestionId(), e.getMessage());
+                log.error("Error deserializing question choices JSON: {}", e.getMessage());
                 builder.choices(Collections.emptyList());
             }
         } else {
             builder.choices(Collections.emptyList());
         }
-
         return builder.build();
     }
 
@@ -538,14 +556,65 @@ public class QuizServiceImpl implements QuizService {
     @Override
     @Transactional
     public void deleteQuiz(UUID quizId) {
-        if (quizRepository.existsById(quizId)) {
-            questionRepository.deleteByQuizId(quizId);
-            quizTagRepository.deleteByQuizId(quizId);
-            quizRepository.deleteById(quizId);
-        } else {
-            throw new ResourceNotFoundException("Quiz", "id", quizId);
+        Quiz quiz = quizRepository.findById(quizId)
+                .orElseThrow(() -> new ResourceNotFoundException("Quiz", "id", quizId));
+
+        UUID creatorId = quiz.getCreatorId();
+        long totalFreedSpace = 0;
+
+        // 1. Delete Cover Image (if exists)
+        if (quiz.getCoverImageId() != null) {
+            try {
+                totalFreedSpace += imageStorageService.deleteImageStorageAndFile(quiz.getCoverImageId());
+            } catch (ResourceNotFoundException e) {
+                log.warn("Cover ImageStorage record {} for quiz {} not found during deletion. File size not accounted for.", quiz.getCoverImageId(), quizId);
+            } catch (FileStorageException e) {
+                // Log and potentially re-throw or handle based on policy
+                // If this fails, the transaction should roll back, quiz won't be deleted.
+                log.error("Failed to delete cover image file for quiz {}: {}", quizId, e.getMessage());
+                throw e; // Or a custom wrapper exception
+            }
         }
-    } // Added deleteByQuizId for QuizTag
+
+        // 2. Delete Question Images
+        List<Question> questions = questionRepository.findByQuizIdOrderByPositionAsc(quizId);
+        for (Question question : questions) {
+            if (question.getImageId() != null) {
+                try {
+                    totalFreedSpace += imageStorageService.deleteImageStorageAndFile(question.getImageId());
+                } catch (ResourceNotFoundException e) {
+                    log.warn("Question ImageStorage record {} for question {} (quiz {}) not found during deletion. File size not accounted for.",
+                            question.getImageId(), question.getQuestionId(), quizId);
+                } catch (FileStorageException e) {
+                    log.error("Failed to delete image file for question {} (quiz {}): {}", question.getQuestionId(), quizId, e.getMessage());
+                    throw e; // Or a custom wrapper exception
+                }
+            }
+        }
+
+        // 3. Delete associations and main entities
+        // Order: QuizTags, Questions, then Quiz itself.
+        // (Your existing deleteQuiz in QuizServiceImpl already has questionRepository.deleteByQuizId and quizTagRepository.deleteByQuizId)
+        // Ensure these are called before quizRepository.deleteById(quizId)
+
+        quizTagRepository.deleteByQuizId(quizId); // Ensure this runs
+        questionRepository.deleteByQuizId(quizId); // Ensure this runs
+        quizRepository.deleteById(quizId); // This will perform soft/hard delete based on Quiz entity
+
+        // 4. Update User Storage
+        if (totalFreedSpace > 0 && creatorId != null) {
+            try {
+                userAccountService.updateUserStorageUsed(creatorId, -totalFreedSpace); // Subtract freed space
+            } catch (Exception e) {
+                // CRITICAL: Quiz and files deleted, but storage update failed.
+                // This needs careful logging and possibly manual reconciliation.
+                log.error("CRITICAL: Quiz {} and its images deleted, but failed to update user {} storage by {}. Manual reconciliation needed. Error: {}",
+                        quizId, creatorId, -totalFreedSpace, e.getMessage());
+                // Don't re-throw here, as the primary deletion was successful.
+            }
+        }
+        log.info("Quiz {} and its associated images deleted successfully. Freed space: {} bytes for user {}", quizId, totalFreedSpace, creatorId);
+    }
 
     @Override
     @Transactional
