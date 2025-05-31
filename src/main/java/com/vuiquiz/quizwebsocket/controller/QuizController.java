@@ -4,18 +4,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vuiquiz.quizwebsocket.dto.QuizDTO;
 import com.vuiquiz.quizwebsocket.exception.FileStorageException;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
+import com.vuiquiz.quizwebsocket.exception.StorageQuotaExceededException;
 import com.vuiquiz.quizwebsocket.model.Quiz;
 import com.vuiquiz.quizwebsocket.payload.response.MessageResponse;
 import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
 import com.vuiquiz.quizwebsocket.service.QuizService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.StringToClassMapItem;
+import io.swagger.v3.oas.annotations.media.*;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.validation.Valid;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -28,10 +30,15 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.multipart.MultipartHttpServletRequest;
 
-import java.util.List;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 @CrossOrigin(origins = "*", maxAge = 3600)
@@ -51,61 +58,186 @@ public class QuizController {
         this.objectMapper = objectMapper;
     }
 
-    @PostMapping(consumes = {MediaType.MULTIPART_FORM_DATA_VALUE}) // Specify consumes
+    @PostMapping(consumes = {MediaType.MULTIPART_FORM_DATA_VALUE})
     @PreAuthorize("isAuthenticated()")
-    @Operation(summary = "Create a new quiz with optional images",
-            description = "Creates a new quiz including its questions. Allows uploading an optional cover image for the quiz and optional images for each question. " +
-                    "The quiz data should be sent as a JSON string under the part name 'quizData'. " +
-                    "The cover image file should be sent under the part name 'coverImageFile'. " +
-                    "Question images should be sent as a list of files under the part name 'questionImageFiles', in the same order as the questions in 'quizData'.",
-            security = @SecurityRequirement(name = "bearerAuth"))
+    @Operation(
+            summary = "Create a new quiz with explicitly keyed images",
+            description = """
+                Creates a new quiz by processing a multipart/form-data request. The request must include:
+                1.  A **`quizData` part**: This part contains the quiz's metadata as a JSON string, conforming to the `QuizDTO` schema.
+                    It is crucial that this part has a `Content-Type` header of `application/json`.
+                    - The `QuizDTO` should specify `coverImageUploadKey` (string, optional) for the quiz's cover image.
+                    - Each `QuestionDTO` within `quizData` can specify `questionImageUploadKey` (string, optional) for its associated image.
+                2.  **Image file parts**: For each `coverImageUploadKey` or `questionImageUploadKey` provided in the `quizData` JSON,
+                    a corresponding binary file part must be sent.
+                    - The **name of each image file part MUST exactly match** the corresponding `uploadKey` string from `quizData`.
+                    For instance, if `quizData` includes `"coverImageUploadKey": "promoImage123"`, then the multipart request must contain
+                    a file part named `promoImage123` with the image data.
+                """,
+            security = @SecurityRequirement(name = "bearerAuth"),
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+
+                    description = "Multipart request containing quiz data and image files.",
+
+                    required = true,
+
+                    content = @Content(
+                            mediaType = MediaType.MULTIPART_FORM_DATA_VALUE,
+                            schema = @Schema(
+                                    type = "object",
+                                    requiredProperties = {"quizData"} // Specifies that 'quizData' part is mandatory
+                            ),
+                            encoding = {
+                                    @Encoding(
+                                            name = "quizData", // Must match a property name in the schema above
+                                            contentType = "application/json" // Ensures this part is treated as JSON
+                                    )
+                                    // Encoding for dynamic file parts (e.g., 'cover123', 'q_image_abc') cannot be explicitly listed here
+                                    // as their names are not fixed. The client should set the appropriate Content-Type for each image file part
+                                    // (e.g., image/jpeg, image/png).
+                            },
+                            examples = {
+                                    @ExampleObject(
+                                            name = "Quiz with Cover and Question Image",
+                                            summary = "Example multipart request payload",
+                                            description = """
+                                                Illustrates sending `quizData` (as application/json) and two image files.
+                                                The part names for images (`cover123`, `q_image_abc`) MUST match the keys specified in `quizData`.
+                                                (Note: Binary data is represented conceptually below).
+                                                """,
+                                            value = """
+                                                --boundary
+                                                Content-Disposition: form-data; name="quizData"
+                                                Content-Type: application/json
+
+                                                {
+                                                  "title": "My Keyed Image Quiz",
+                                                  "coverImageUploadKey": "cover123",
+                                                  "questions": [
+                                                    {
+                                                      "title": "Question 1 with Image",
+                                                      "questionImageUploadKey": "q_image_abc"
+                                                      /* other question props */
+                                                    }
+                                                  ]
+                                                  /* other quiz props */
+                                                }
+                                                --boundary
+                                                Content-Disposition: form-data; name="cover123"; filename="cover.jpg"
+                                                Content-Type: image/jpeg
+
+                                                (binary image data for cover.jpg)
+                                                --boundary
+                                                Content-Disposition: form-data; name="q_image_abc"; filename="question_pic.png"
+                                                Content-Type: image/png
+
+                                                (binary image data for question_pic.png)
+                                                --boundary--
+                                                """
+                                    )
+                            }
+                    )
+            )
+    )
     @ApiResponse(responseCode = "201", description = "Quiz created successfully",
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE, schema = @Schema(implementation = QuizDTO.class)))
     @ApiResponse(responseCode = "400", description = "Invalid input data (e.g., JSON parsing error, validation error, file type error)",
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE, schema = @Schema(implementation = MessageResponse.class)))
     @ApiResponse(responseCode = "401", description = "Unauthorized")
-    public ResponseEntity<?> createQuiz(
-            @Parameter(description = "JSON string of QuizDTO", required = true) @Valid @RequestPart("quizData") String quizDataString,
-            @Parameter(description = "Optional cover image file for the quiz") @RequestPart(name = "coverImageFile", required = false) MultipartFile coverImageFile,
-            @Parameter(description = "Optional list of image files for questions, in order. Their count and order should correspond to questions in quizData.") @RequestPart(name = "questionImageFiles", required = false) List<MultipartFile> questionImageFiles) {
-
+    public ResponseEntity<?> createQuiz(HttpServletRequest request) {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
         UUID creatorId = userDetails.getId();
 
-        QuizDTO quizRequestDTO;
-        try {
-            quizRequestDTO = objectMapper.readValue(quizDataString, QuizDTO.class);
-        } catch (Exception e) {
-            log.error("Error parsing quizDataString for user {}: {}", creatorId, e.getMessage());
-            return ResponseEntity.badRequest().body(new MessageResponse("Error parsing quizData JSON: " + e.getMessage()));
+        if (!(request instanceof MultipartHttpServletRequest multipartRequest)) {
+            log.error("Request is not a multipart request for user {}", creatorId);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MessageResponse("Invalid request: Expected a multipart request."));
         }
 
-        // Basic validation: if questionImageFiles are provided, their count should not exceed the number of questions.
-        // More robust mapping (e.g. specific image for specific question index) can be done in the service.
-        if (questionImageFiles != null && quizRequestDTO.getQuestions() != null && questionImageFiles.size() > quizRequestDTO.getQuestions().size()) {
-            // This is a simplified check. Ideally, the client ensures the order and count.
-            // Or, a more complex mapping strategy would be needed if files are not strictly ordered.
-            log.warn("User {} provided {} question images for {} questions. Extra images will be ignored or this could be an error.",
-                    creatorId, questionImageFiles.size(), quizRequestDTO.getQuestions().size());
-            // Depending on strictness, you could return BadRequest here.
-        }
-
+        String quizDataString = null;
+        Map<String, MultipartFile> imageFilesForService = new HashMap<>();
 
         try {
-            QuizDTO createdQuiz = quizService.createQuiz(quizRequestDTO, creatorId, coverImageFile, questionImageFiles);
+            // Attempt to get quizData part
+            jakarta.servlet.http.Part quizDataPart = multipartRequest.getPart("quizData");
+            if (quizDataPart != null) {
+                // Log the content type of the quizData part for debugging
+                log.info("quizData part received. Name: {}, ContentType: {}, Size: {}",
+                        quizDataPart.getName(), quizDataPart.getContentType(), quizDataPart.getSize());
+
+                // Recommended: Client should send quizData part with Content-Type: application/json
+                // If it's not application/json, parsing might be based on default charset.
+                if (quizDataPart.getContentType() != null &&
+                        !quizDataPart.getContentType().toLowerCase().contains("application/json") &&
+                        !quizDataPart.getContentType().toLowerCase().contains("text/plain")) {
+                    log.warn("Content-Type of 'quizData' part is '{}'. Expected 'application/json' or 'text/plain'. Attempting to read as UTF-8 string.", quizDataPart.getContentType());
+                }
+                quizDataString = StreamUtils.copyToString(quizDataPart.getInputStream(), StandardCharsets.UTF_8);
+            } else {
+                // Fallback: try getParameter if it was sent as a simple form field (less likely for JSON)
+                quizDataString = multipartRequest.getParameter("quizData");
+                if (quizDataString != null) {
+                    log.warn("'quizData' was retrieved as a request parameter. Ensure client sends it as a distinct multipart part, ideally with Content-Type 'application/json'.");
+                }
+            }
+
+            if (quizDataString == null || quizDataString.trim().isEmpty()) {
+                log.error("quizData part is missing or empty in the multipart request for user {}", creatorId);
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MessageResponse("Missing or empty 'quizData' part in the request."));
+            }
+
+            // Populate the imageFiles map for the service
+            // getFileMap() returns all parts that are files.
+            Map<String, MultipartFile> allUploadedFiles = multipartRequest.getFileMap();
+            for (Map.Entry<String, MultipartFile> entry : allUploadedFiles.entrySet()) {
+                // We assume that if 'quizData' was sent as a file (e.g. client uploaded a .json file for it),
+                // its key would be "quizData". All other file parts are actual images.
+                if (!entry.getKey().equals("quizData")) {
+                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                        imageFilesForService.put(entry.getKey(), entry.getValue());
+                        log.info("Adding image file to service map: key='{}', originalFilename='{}', size={}",
+                                entry.getKey(), entry.getValue().getOriginalFilename(), entry.getValue().getSize());
+                    }
+                } else {
+                    // This case means quizData itself was uploaded as a file.
+                    // We've already handled reading its content above if getPart("quizData") was used.
+                    // If quizDataString was populated via getParameter, this condition won't be met for "quizData".
+                    log.info("Part named 'quizData' was also found in the file map. Content already read if it was a file part.");
+                }
+            }
+            if(imageFilesForService.isEmpty() && !allUploadedFiles.isEmpty() && !allUploadedFiles.containsKey("quizData")){
+                // This might happen if keys in allUploadedFiles are not matching uploadKeys but are not "quizData" either.
+                // Or if all files are named 'quizData' which would be wrong.
+                log.warn("imageFilesForService is empty, but allUploadedFiles map was not. Keys in allUploadedFiles: {}. This might indicate a mismatch in expected part names vs. sent part names for images.", allUploadedFiles.keySet());
+            }
+
+
+            log.debug("Parsed quizDataString (first 200 chars): {}", quizDataString.substring(0, Math.min(quizDataString.length(), 200)));
+            log.info("Number of image files prepared for service: {}", imageFilesForService.size());
+            imageFilesForService.forEach((key, file) -> log.debug("Service image file: {} -> {}", key, file.getOriginalFilename()));
+
+
+            QuizDTO quizRequestDTO = objectMapper.readValue(quizDataString, QuizDTO.class);
+
+            QuizDTO createdQuiz = quizService.createQuiz(quizRequestDTO, creatorId, imageFilesForService);
             return new ResponseEntity<>(createdQuiz, HttpStatus.CREATED);
-        } catch (FileStorageException e) {
-            log.error("File storage error during quiz creation for user {}: {}", creatorId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MessageResponse("File error: " + e.getMessage()));
+
+        } catch (IOException | ServletException e) {
+            log.error("Error processing multipart request for user {}: {}", creatorId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MessageResponse("Error processing multipart request: " + e.getMessage()));
+        } catch (StorageQuotaExceededException | FileStorageException e) {
+            log.error("Storage or file error during quiz creation for user {}: {}", creatorId, e.getMessage());
+            // Consider a more specific HTTP status if needed, e.g., HttpStatus.INSUFFICIENT_STORAGE for quota
+            return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(new MessageResponse("File error: " + e.getMessage()));
         } catch (IllegalArgumentException e) {
             log.error("Invalid argument during quiz creation for user {}: {}", creatorId, e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MessageResponse("Invalid data: " + e.getMessage()));
-        } catch (Exception e) {
+        } catch (Exception e) { // Catch-all for other unexpected errors
             log.error("Unexpected error during quiz creation for user {}: {}", creatorId, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new MessageResponse("An unexpected error occurred."));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new MessageResponse("An unexpected error occurred: " + e.getMessage()));
         }
     }
+
 
     @GetMapping("/{quizId}")
     @Operation(summary = "Get full quiz details by ID",

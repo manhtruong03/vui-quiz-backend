@@ -75,22 +75,44 @@ public class QuizServiceImpl implements QuizService {
 
     @Override
     @Transactional
-    public QuizDTO createQuiz(QuizDTO quizDto, UUID creatorId,
-                              MultipartFile coverImageFile, List<MultipartFile> questionImageFiles) {
-
-        long totalUploadSize = 0;
-        if (coverImageFile != null && !coverImageFile.isEmpty()) {
-            totalUploadSize += coverImageFile.getSize();
+    public QuizDTO createQuiz(QuizDTO quizDto, UUID creatorId, Map<String, MultipartFile> imageFiles) {
+        // Ensure imageFiles map is not null if used, though it can be empty
+        if (imageFiles == null) {
+            imageFiles = Collections.emptyMap();
         }
-        if (questionImageFiles != null) {
-            for (MultipartFile qFile : questionImageFiles) {
-                if (qFile != null && !qFile.isEmpty()) {
-                    totalUploadSize += qFile.getSize();
+
+        // 0. Determine total upload size and check quota
+        long totalUploadSize = 0;
+        MultipartFile coverImageFile = null;
+
+        // Check for cover image
+        if (quizDto.getCoverImageUploadKey() != null) {
+            coverImageFile = imageFiles.get(quizDto.getCoverImageUploadKey());
+            if (coverImageFile != null && !coverImageFile.isEmpty()) {
+                totalUploadSize += coverImageFile.getSize();
+            } else {
+                // If key was provided but no file, log or handle as an error/warning
+                log.warn("CoverImageUploadKey '{}' was provided in quizData, but no corresponding file was found in imageFiles map for quiz title '{}'.", quizDto.getCoverImageUploadKey(), quizDto.getTitle());
+                coverImageFile = null; // Ensure it's null if not found or empty
+            }
+        }
+
+        // Collect question images and their sizes
+        Map<String, MultipartFile> questionImagesMapForProcessing = new HashMap<>();
+        if (quizDto.getQuestions() != null) {
+            for (QuestionDTO qDto : quizDto.getQuestions()) {
+                if (qDto.getQuestionImageUploadKey() != null) {
+                    MultipartFile qFile = imageFiles.get(qDto.getQuestionImageUploadKey());
+                    if (qFile != null && !qFile.isEmpty()) {
+                        totalUploadSize += qFile.getSize();
+                        questionImagesMapForProcessing.put(qDto.getQuestionImageUploadKey(), qFile);
+                    } else {
+                        log.warn("QuestionImageUploadKey '{}' was provided for question '{}' (quiz title '{}'), but no corresponding file was found in imageFiles map.", qDto.getQuestionImageUploadKey(), qDto.getTitle(), quizDto.getTitle());
+                    }
                 }
             }
         }
 
-        // 0. Check total storage quota FIRST
         if (totalUploadSize > 0) {
             if (!userAccountService.canUserUpload(creatorId, totalUploadSize)) {
                 throw new StorageQuotaExceededException("Upload exceeds storage quota. Required: " + totalUploadSize + " bytes.");
@@ -98,22 +120,24 @@ public class QuizServiceImpl implements QuizService {
         }
 
         Quiz quiz = new Quiz();
-        // ... (map quizDto to quiz entity: creatorId, title, description, etc.)
         quiz.setCreatorId(creatorId);
         quiz.setTitle(quizDto.getTitle());
         quiz.setDescription(quizDto.getDescription());
         quiz.setVisibility(quizDto.getVisibility() != null ? quizDto.getVisibility() : 0);
         quiz.setStatus(StringUtils.hasText(quizDto.getStatus()) ? quizDto.getStatus() : "DRAFT");
-        quiz.setQuizTypeInfo(quizDto.getQuizType());
+        quiz.setQuizTypeInfo(quizDto.getQuizType()); // Assuming quizDto.getQuizType() maps to quizTypeInfo
 
-
-        // 1. Handle Cover Image (if present)
-        UUID savedCoverImageId = null;
+        // 1. Handle Cover Image
         if (coverImageFile != null && !coverImageFile.isEmpty()) {
-            String storedCoverFileName = fileStorageService.storeFile(coverImageFile);
-            ImageStorage coverImageRecord = imageStorageService.createImageRecord(coverImageFile, storedCoverFileName, creatorId);
-            quiz.setCoverImageId(coverImageRecord.getImageId());
-            savedCoverImageId = coverImageRecord.getImageId(); // Keep track if successful
+            try {
+                String storedCoverFileName = fileStorageService.storeFile(coverImageFile);
+                ImageStorage coverImageRecord = imageStorageService.createImageRecord(coverImageFile, storedCoverFileName, creatorId);
+                quiz.setCoverImageId(coverImageRecord.getImageId());
+            } catch (FileStorageException e) {
+                log.error("Failed to store cover image for quiz title '{}': {}", quizDto.getTitle(), e.getMessage());
+                // Depending on requirements, you might throw a specialized exception or wrap and rethrow
+                throw new FileStorageException("Failed to store cover image: " + e.getMessage(), e);
+            }
         }
 
         if (quizDto.getLobbyVideo() != null) {
@@ -121,16 +145,13 @@ public class QuizServiceImpl implements QuizService {
                 quiz.setLobbyVideoJson(objectMapper.writeValueAsString(quizDto.getLobbyVideo()));
             } catch (JsonProcessingException e) {
                 log.error("Error serializing lobby video DTO for quiz title '{}': {}", quizDto.getTitle(), e.getMessage());
-                quiz.setLobbyVideoJson(null);
+                quiz.setLobbyVideoJson(null); // Or handle error more gracefully
             }
         }
-
-        // ... (lobbyVideoJson handling)
 
         Quiz savedQuiz = quizRepository.save(quiz);
         UUID persistedQuizId = savedQuiz.getQuizId();
         int questionCount = 0;
-        List<UUID> savedQuestionImageIds = new ArrayList<>(); // Keep track
 
         if (!CollectionUtils.isEmpty(quizDto.getQuestions())) {
             List<Question> questionsToSave = new ArrayList<>();
@@ -144,7 +165,6 @@ public class QuizServiceImpl implements QuizService {
 
                 Question question = new Question();
                 question.setQuizId(persistedQuizId);
-                // ... (map other question DTO fields to question entity)
                 question.setQuestionType(questionDtoInternal.getType());
                 question.setQuestionText(questionDtoInternal.getTitle());
                 question.setDescriptionText(questionDtoInternal.getDescription());
@@ -152,35 +172,38 @@ public class QuizServiceImpl implements QuizService {
                 question.setPointsMultiplier(questionDtoInternal.getPointsMultiplier() != null ? questionDtoInternal.getPointsMultiplier() : 0);
                 question.setPosition(questionDtoInternal.getPosition() != null ? questionDtoInternal.getPosition() : i);
 
-
-                // 2. Handle Question Image
-                if (questionImageFiles != null && i < questionImageFiles.size()) {
-                    MultipartFile questionImageFile = questionImageFiles.get(i);
+                // 2. Handle Question Image using its upload key
+                if (questionDtoInternal.getQuestionImageUploadKey() != null) {
+                    MultipartFile questionImageFile = questionImagesMapForProcessing.get(questionDtoInternal.getQuestionImageUploadKey());
                     if (questionImageFile != null && !questionImageFile.isEmpty()) {
-                        String storedQuestionImageName = fileStorageService.storeFile(questionImageFile);
-                        ImageStorage questionImageRecord = imageStorageService.createImageRecord(questionImageFile, storedQuestionImageName, creatorId);
-                        question.setImageId(questionImageRecord.getImageId());
-                        savedQuestionImageIds.add(questionImageRecord.getImageId()); // Keep track
+                        try {
+                            String storedQuestionImageName = fileStorageService.storeFile(questionImageFile);
+                            ImageStorage questionImageRecord = imageStorageService.createImageRecord(questionImageFile, storedQuestionImageName, creatorId);
+                            question.setImageId(questionImageRecord.getImageId());
+                        } catch (FileStorageException e) {
+                            log.error("Failed to store image for question '{}' (quiz title '{}'): {}", questionDtoInternal.getTitle(), quizDto.getTitle(), e.getMessage());
+                            // Depending on requirements, decide if this should halt creation or just skip the image
+                            // For now, we'll let it skip the image if storage fails for a question image
+                        }
                     }
                 }
-                // ... (map video, choices JSON for question)
 
                 if (questionDtoInternal.getVideo() != null) {
                     try {
                         question.setVideoContentJson(objectMapper.writeValueAsString(questionDtoInternal.getVideo()));
                     } catch (JsonProcessingException e) {
-                        log.error("Error serializing question video DTO: {}", e.getMessage());
+                        log.error("Error serializing question video DTO for question '{}': {}", questionDtoInternal.getTitle(), e.getMessage());
                     }
                 }
                 if (!CollectionUtils.isEmpty(questionDtoInternal.getChoices())) {
                     try {
                         question.setAnswerDataJson(objectMapper.writeValueAsString(questionDtoInternal.getChoices()));
                     } catch (JsonProcessingException e) {
-                        log.error("Error serializing question choices DTO: {}", e.getMessage());
-                        question.setAnswerDataJson("[]");
+                        log.error("Error serializing question choices DTO for question '{}': {}", questionDtoInternal.getTitle(), e.getMessage());
+                        question.setAnswerDataJson("[]"); // Default to empty JSON array on error
                     }
                 } else {
-                    question.setAnswerDataJson("[]");
+                    question.setAnswerDataJson("[]"); // Default to empty JSON array if no choices
                 }
 
                 questionsToSave.add(question);
@@ -191,18 +214,17 @@ public class QuizServiceImpl implements QuizService {
             }
         }
 
-        // Handle Tags (existing logic)
+        // Handle Tags
         if (!CollectionUtils.isEmpty(quizDto.getTags())) {
             for (String tagName : quizDto.getTags()) {
                 try {
                     Tag tag = tagService.findOrCreateTagByName(tagName);
                     quizTagService.addTagToQuiz(persistedQuizId, tag.getTagId());
-                } catch (Exception e) {
-                    log.warn("Skipping tag '{}' for quiz '{}' due to error: {}", tagName, quizDto.getTitle(), e.getMessage());
+                } catch (Exception e) { // Catch broader exception for tag processing
+                    log.warn("Skipping tag '{}' for quiz '{}' (ID: {}) due to error: {}", tagName, quizDto.getTitle(), persistedQuizId, e.getMessage());
                 }
             }
         }
-
 
         savedQuiz.setQuestionCount(questionCount);
         Quiz finalSavedQuiz = quizRepository.save(savedQuiz);
@@ -212,20 +234,22 @@ public class QuizServiceImpl implements QuizService {
             try {
                 userAccountService.updateUserStorageUsed(creatorId, totalUploadSize);
             } catch (Exception e) {
-                // This is tricky. Quiz and images are saved. Storage update failed.
-                // Option 1: Log critical error, manual reconciliation needed. (Simplest for now)
-                // Option 2: Try to roll back image storage (delete files, delete ImageStorage records) - complex.
-                // Option 3: For a truly atomic operation, this might require distributed transaction concepts or a saga pattern,
-                //           which is overkill for this stage.
                 log.error("CRITICAL: Quiz {} created and images stored, but failed to update user {} storage by {}. Manual reconciliation needed. Error: {}",
                         finalSavedQuiz.getQuizId(), creatorId, totalUploadSize, e.getMessage());
-                // For now, we let the quiz creation succeed and log the storage update issue.
+                // Quiz creation succeeds, but storage update issue is logged.
             }
         }
 
+        // Map to DTO for response.
+        // Note: The 'cover' and question 'image' URLs in the response DTO will be resolved by the mappers.
+        // The original DTO contained uploadKeys, but the response DTO should contain actual URLs.
+        // The mapQuizEntityToDto and mapQuestionEntityToDto methods should handle resolving ImageStorage IDs to public URLs.
         return mapQuizEntityToDto(finalSavedQuiz,
                 userAccountRepository.findById(creatorId).map(UserAccount::getUsername).orElse(null),
-                false, getTagNamesForQuiz(finalSavedQuiz.getQuizId()), false);
+                true, // loadQuestions for the response of create
+                getTagNamesForQuiz(finalSavedQuiz.getQuizId()),
+                true // calculateTotalTimeLimit
+        );
     }
 
     @Override
