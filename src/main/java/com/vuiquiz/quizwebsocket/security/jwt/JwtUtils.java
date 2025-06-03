@@ -1,21 +1,31 @@
 package com.vuiquiz.quizwebsocket.security.jwt;
 
+import com.vuiquiz.quizwebsocket.model.UserAccount;
+import com.vuiquiz.quizwebsocket.repository.UserAccountRepository;
+import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.security.Key;
 import java.util.Date;
+import java.util.stream.Collectors;
 
 @Component
 @Slf4j
 public class JwtUtils {
+
+    @Autowired
+    private UserAccountRepository userRepository;
 
     @Value("${app.jwtSecret}")
     private String jwtSecret;
@@ -32,10 +42,15 @@ public class JwtUtils {
     }
 
     public String generateJwtToken(Authentication authentication) {
-        UserDetails userPrincipal = (UserDetails) authentication.getPrincipal();
+        UserDetailsImpl userPrincipal = (UserDetailsImpl) authentication.getPrincipal();
 
         return Jwts.builder()
-                .setSubject((userPrincipal.getUsername()))
+                .setSubject(userPrincipal.getUsername())
+                .claim("userId", userPrincipal.getId().toString())
+                .claim("email", userPrincipal.getEmail())
+                .claim("roles", userPrincipal.getAuthorities().stream()
+                        .map(GrantedAuthority::getAuthority)
+                        .collect(Collectors.toList()))
                 .setIssuedAt(new Date())
                 .setExpiration(new Date((new Date()).getTime() + jwtExpirationMs))
                 .signWith(key, SignatureAlgorithm.HS512)
@@ -43,8 +58,14 @@ public class JwtUtils {
     }
 
     public String generateTokenFromUsername(String username) {
+        UserAccount user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with username: " + username));
+
         return Jwts.builder()
                 .setSubject(username)
+                .claim("userId", user.getUserId().toString())
+                .claim("email", user.getEmail())
+                .claim("role", user.getRole())
                 .setIssuedAt(new Date())
                 .setExpiration(new Date((new Date()).getTime() + jwtExpirationMs))
                 .signWith(key, SignatureAlgorithm.HS512)
