@@ -79,15 +79,19 @@ public class WebSecurityConfig {
                                 .requestMatchers("/api/session/join/**").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/api/quizzes/public").permitAll()
                                 .requestMatchers("/api/session/finalize").authenticated()
+                                // Public reports (as per user's previous statement)
                                 .requestMatchers("/api/reports/**").permitAll()
+                                // Authenticated user's own session history
                                 .requestMatchers("/api/users/sessions").authenticated()
                                 .requestMatchers("/error").permitAll()
                                 .requestMatchers(SWAGGER_WHITELIST).permitAll()
                                 .requestMatchers("/files/images/**").permitAll()
                                 .requestMatchers("/api/upload-test-image").permitAll()
+                                // Admin specific paths
                                 .requestMatchers("/api/admin/users/**").hasRole("ADMIN")
                                 .requestMatchers("/api/admin/images/**").hasRole("ADMIN")
                                 .requestMatchers("/api/admin/tags/**").hasRole("ADMIN")
+                                .requestMatchers("/api/admin/reports/**").hasRole("ADMIN")
                                 .anyRequest().authenticated()
                 );
 

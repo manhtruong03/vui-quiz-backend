@@ -17,4 +17,5 @@ public interface PlayerAnswerRepository extends JpaRepository<PlayerAnswer, UUID
     // This would require joining GameSlide with originalQuestionId if not directly stored
     // List<PlayerAnswer> findByGameSlideOriginalQuestionId(UUID originalQuestionId); // Indirect
     List<PlayerAnswer> findByPlayerIdIn(List<UUID> playerIds);
+    List<PlayerAnswer> findBySlideIdIn(List<UUID> slideIds);
 }

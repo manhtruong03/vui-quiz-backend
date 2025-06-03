@@ -639,4 +639,84 @@ public class GameReportServiceImpl implements GameReportService {
 
         return new PageImpl<>(dtos, pageable, allRelevantSessions.size());
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<SessionSummaryDto> adminGetAllSessionSummaries(Pageable pageable) {
+        log.info("Admin request to get all session summaries, pageable: {}", pageable);
+        Page<GameSession> gameSessionPage = gameSessionRepository.findAll(pageable);
+
+        // Note: Mapping each GameSession to a full SessionSummaryDto here can be
+        // performance-intensive if getSessionSummary itself performs many queries.
+        // This is a point for potential optimization, e.g., by creating a more
+        // lightweight DTO for list views or batching internal data fetching.
+        List<SessionSummaryDto> summaries = gameSessionPage.getContent().stream()
+                .map(session -> {
+                    try {
+                        // Reuse the existing getSessionSummary logic for each session.
+                        // This is simple to implement but may lead to N+1 issues if not careful
+                        // or if getSessionSummary is highly complex.
+                        return getSessionSummary(session.getSessionId());
+                    } catch (ResourceNotFoundException e) {
+                        // Should not happen if session comes from gameSessionPage, but good practice
+                        log.error("Error generating summary for session ID {}: {}", session.getSessionId(), e.getMessage());
+                        return null; // Or a DTO indicating an error/partial data
+                    }
+                })
+                .filter(Objects::nonNull) // Filter out any nulls if errors occurred
+                .collect(Collectors.toList());
+
+        return new PageImpl<>(summaries, pageable, gameSessionPage.getTotalElements());
+    }
+
+    @Override
+    @Transactional
+    public void adminDeleteGameSessionReport(UUID sessionId) {
+        log.info("Admin request to delete game session report for ID: {}", sessionId);
+
+        GameSession session = gameSessionRepository.findById(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("GameSession", "id", sessionId));
+
+        UUID quizId = session.getQuizId();
+
+        // 1. Get all GameSlides for the session
+        List<GameSlide> gameSlides = gameSlideRepository.findBySessionIdOrderBySlideIndexAsc(sessionId);
+        if (!gameSlides.isEmpty()) {
+            List<UUID> slideIds = gameSlides.stream().map(GameSlide::getSlideId).collect(Collectors.toList());
+
+            // 2. Delete PlayerAnswers associated with these slides
+            // Efficient bulk delete if PlayerAnswerRepository has deleteBySlideIdIn or similar
+            // For now, fetching and then deleting.
+            List<PlayerAnswer> answersToDelete = playerAnswerRepository.findAllById(
+                    playerAnswerRepository.findBySlideIdIn(slideIds) // Assuming findBySlideIdIn exists or can be added for efficiency
+                            .stream().map(PlayerAnswer::getAnswerId).collect(Collectors.toList())
+            );
+            if(!answersToDelete.isEmpty()) playerAnswerRepository.deleteAllInBatch(answersToDelete);
+            log.debug("Deleted {} player answers for session {}", answersToDelete.size(), sessionId);
+
+
+            // 3. Delete GameSlides
+            gameSlideRepository.deleteAllInBatch(gameSlides);
+            log.debug("Deleted {} game slides for session {}", gameSlides.size(), sessionId);
+        }
+
+
+        // 4. Delete Players for the session
+        List<Player> players = playerRepository.findBySessionId(sessionId);
+        if (!players.isEmpty()) {
+            playerRepository.deleteAllInBatch(players);
+            log.debug("Deleted {} players for session {}", players.size(), sessionId);
+        }
+
+        // 5. Decrement Quiz playCount
+        quizRepository.findById(quizId).ifPresent(quiz -> {
+            quiz.setPlayCount(Math.max(0, quiz.getPlayCount() - 1));
+            quizRepository.save(quiz);
+            log.debug("Decremented play count for quiz {}", quizId);
+        });
+
+        // 6. Delete the GameSession itself
+        gameSessionRepository.delete(session);
+        log.info("Successfully deleted game session report for ID: {}", sessionId);
+    }
 }

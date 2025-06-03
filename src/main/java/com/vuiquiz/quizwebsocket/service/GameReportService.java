@@ -11,6 +11,8 @@ public interface GameReportService {
     Page<PlayerReportItemDto> getPlayerReports(UUID sessionId, Pageable pageable);
     Page<QuestionReportItemDto> getQuestionReports(UUID sessionId, Pageable pageable);
     Page<PlayerAnswerReportItemDto> getPlayerAnswersReport(UUID sessionId, UUID playerId, Pageable pageable);
-    // Method signature changed: no longer takes userId
     Page<UserSessionHistoryItemDto> getCurrentUserSessions(Pageable pageable);
+
+    Page<SessionSummaryDto> adminGetAllSessionSummaries(Pageable pageable);
+    void adminDeleteGameSessionReport(UUID sessionId);
 }
