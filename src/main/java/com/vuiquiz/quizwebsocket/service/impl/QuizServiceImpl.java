@@ -298,7 +298,6 @@ public class QuizServiceImpl implements QuizService {
             return new PageImpl<>(Collections.emptyList(), pageable, quizPage.getTotalElements());
         }
 
-        // Efficiently fetch related data
         Set<UUID> coverImageIds = quizzes.stream().map(Quiz::getCoverImageId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<UUID, String> coverImageUrlMap = imageStorageRepository.findAllById(coverImageIds).stream()
                 .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
@@ -306,46 +305,46 @@ public class QuizServiceImpl implements QuizService {
         List<UUID> quizIds = quizzes.stream().map(Quiz::getQuizId).collect(Collectors.toList());
         List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds);
         Set<UUID> allTagIds = allQuizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
+
+        // tagNameMap will only contain active tags due to @Where clause on Tag entity
         Map<UUID, String> tagNameMap = tagRepository.findAllById(allTagIds).stream()
                 .collect(Collectors.toMap(Tag::getTagId, Tag::getName));
+
+        // Filter out nulls when mapping tag names
         Map<UUID, List<String>> tagsByQuizIdMap = allQuizTags.stream()
                 .collect(Collectors.groupingBy(QuizTag::getQuizId,
-                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())));
+                        Collectors.mapping(
+                                qt -> tagNameMap.get(qt.getTagId()), // This can be null if tag is deleted
+                                Collectors.filtering(Objects::nonNull, Collectors.toList()) // Filter out null names
+                        )
+                ));
 
-        // --- TWEAK 2: Fetch questions for each quiz to calculate total time limit ---
-        // This can lead to N+1 if not handled carefully. Fetching all questions for all quizzes on the page:
         Map<UUID, List<Question>> questionsByQuizIdMap = new HashMap<>();
         if (!quizIds.isEmpty()) {
             List<Question> allQuestionsForPageQuizzes = questionRepository.findByQuizIdIn(quizIds);
             questionsByQuizIdMap = allQuestionsForPageQuizzes.stream().collect(Collectors.groupingBy(Question::getQuizId));
         }
-        // --- END TWEAK 2 PREPARATION ---
+        Map<UUID, List<Question>> finalQuestionsMap = questionsByQuizIdMap;
 
-        Map<UUID, List<Question>> finalQuestionsMap = questionsByQuizIdMap; // Effective final for lambda
-
-        // 4. Map Quiz entities to QuizDTOs
         List<QuizDTO> quizDTOs = quizzes.stream()
                 .map(quiz -> {
                     String coverFilePath = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
                     String fullCoverUrl = null;
-                    if (StringUtils.hasText(coverFilePath)) { // Check if filePath is not null or empty
-                        fullCoverUrl = imageStorageService.getPublicUrl(coverFilePath); // Construct full URL
+                    if (StringUtils.hasText(coverFilePath)) {
+                        fullCoverUrl = imageStorageService.getPublicUrl(coverFilePath);
                     }
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
 
-                    // --- TWEAK 2: Calculate total time limit ---
                     List<Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
                     int totalTimeLimitMs = quizQuestions.stream()
                             .filter(q -> q.getTimeLimit() != null)
                             .mapToInt(Question::getTimeLimit)
                             .sum();
-                    // --- END TWEAK 2 CALCULATION ---
 
-                    return mapQuizEntityToListDTO(quiz, currentUsername, fullCoverUrl, tagNames, totalTimeLimitMs); // Pass the full URL
+                    return mapQuizEntityToListDTO(quiz, currentUsername, fullCoverUrl, tagNames, totalTimeLimitMs);
                 })
                 .collect(Collectors.toList());
 
-        // 5. Return the Page<QuizDTO>
         return new PageImpl<>(quizDTOs, pageable, quizPage.getTotalElements());
     }
 
@@ -367,13 +366,21 @@ public class QuizServiceImpl implements QuizService {
                 .collect(Collectors.toMap(ImageStorage::getImageId, ImageStorage::getFilePath));
 
         List<UUID> quizIds = quizzes.stream().map(Quiz::getQuizId).collect(Collectors.toList());
-        List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds);
+        List<QuizTag> allQuizTags = quizTagRepository.findByQuizIdIn(quizIds); // Fetches QuizTag associations
         Set<UUID> allTagIds = allQuizTags.stream().map(QuizTag::getTagId).collect(Collectors.toSet());
+
+        // tagNameMap will only contain active tags due to @Where clause on Tag entity
         Map<UUID, String> tagNameMap = tagRepository.findAllById(allTagIds).stream()
                 .collect(Collectors.toMap(Tag::getTagId, Tag::getName));
+
+        // Filter out nulls when mapping tag names
         Map<UUID, List<String>> tagsByQuizIdMap = allQuizTags.stream()
                 .collect(Collectors.groupingBy(QuizTag::getQuizId,
-                        Collectors.mapping(qt -> tagNameMap.get(qt.getTagId()), Collectors.toList())));
+                        Collectors.mapping(
+                                qt -> tagNameMap.get(qt.getTagId()), // This can be null if tag is deleted
+                                Collectors.filtering(Objects::nonNull, Collectors.toList()) // Filter out null names
+                        )
+                ));
 
         Map<UUID, List<Question>> questionsByQuizIdMap = new HashMap<>();
         if (!quizIds.isEmpty()) {
@@ -388,8 +395,8 @@ public class QuizServiceImpl implements QuizService {
                     String creatorUsername = creatorUsernameMap.get(quiz.getCreatorId());
                     String coverFilePath = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
                     String fullCoverUrl = null;
-                    if (StringUtils.hasText(coverFilePath)) { // Check if filePath is not null or empty
-                        fullCoverUrl = imageStorageService.getPublicUrl(coverFilePath); // Construct full URL
+                    if (StringUtils.hasText(coverFilePath)) {
+                        fullCoverUrl = imageStorageService.getPublicUrl(coverFilePath);
                     }
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
                     List<Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
@@ -397,7 +404,7 @@ public class QuizServiceImpl implements QuizService {
                             .filter(q -> q.getTimeLimit() != null)
                             .mapToInt(Question::getTimeLimit)
                             .sum();
-                    return mapQuizEntityToListDTO(quiz, creatorUsername, fullCoverUrl, tagNames, totalTimeLimitMs); // Pass the full URL
+                    return mapQuizEntityToListDTO(quiz, creatorUsername, fullCoverUrl, tagNames, totalTimeLimitMs);
                 })
                 .collect(Collectors.toList());
 
