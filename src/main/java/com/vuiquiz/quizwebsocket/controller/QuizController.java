@@ -2,9 +2,7 @@ package com.vuiquiz.quizwebsocket.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vuiquiz.quizwebsocket.dto.QuizDTO;
-import com.vuiquiz.quizwebsocket.exception.FileStorageException;
-import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
-import com.vuiquiz.quizwebsocket.exception.StorageQuotaExceededException;
+import com.vuiquiz.quizwebsocket.exception.*;
 import com.vuiquiz.quizwebsocket.model.Quiz;
 import com.vuiquiz.quizwebsocket.payload.response.MessageResponse;
 import com.vuiquiz.quizwebsocket.security.services.UserDetailsImpl;
@@ -241,13 +239,43 @@ public class QuizController {
 
     @GetMapping("/{quizId}")
     @Operation(summary = "Get full quiz details by ID",
-            description = "Retrieves a specific quiz along with all its questions and their details.")
+            description = "Retrieves a specific quiz. Access is conditional: " +
+                    "Public quizzes (visibility=1) require authentication. " +
+                    "Private quizzes (visibility=0) require the requester to be the owner.")
     @ApiResponse(responseCode = "200", description = "Quiz details found",
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = QuizDTO.class)))
+    @ApiResponse(responseCode = "401", description = "Authentication required")
+    @ApiResponse(responseCode = "403", description = "Forbidden - Not authorized to view this quiz")
     @ApiResponse(responseCode = "404", description = "Quiz not found")
-    public ResponseEntity<QuizDTO> getQuizDetailsById( // Renamed controller method for clarity too, though not strictly necessary
-                                                       @Parameter(description = "ID of the quiz to retrieve") @PathVariable UUID quizId) {
-        QuizDTO quizDTO = quizService.getQuizDetailsById(quizId); // Call the renamed service method
+    public ResponseEntity<QuizDTO> getQuizDetailsById(
+            @Parameter(description = "ID of the quiz to retrieve") @PathVariable UUID quizId) {
+
+        QuizDTO quizDTO = quizService.getQuizDetailsById(quizId); // This already handles ResourceNotFoundException
+
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        boolean isAuthenticated = authentication != null && authentication.isAuthenticated() &&
+                !(authentication.getPrincipal() instanceof String && "anonymousUser".equals(authentication.getPrincipal()));
+
+        if (quizDTO.getVisibility() == 0) { // Private quiz
+            if (!isAuthenticated) {
+                throw new UnauthorizedException("Authentication is required to access this private quiz.");
+            }
+            UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+            UUID currentUserId = userDetails.getId();
+            if (quizDTO.getCreatorId() == null || !quizDTO.getCreatorId().equals(currentUserId)) {
+                throw new ForbiddenAccessException("You are not authorized to view this private quiz.");
+            }
+        } else if (quizDTO.getVisibility() == 1) { // Public quiz
+            if (!isAuthenticated) {
+                // As per your requirement: "if quiz public (visibility=1...) non-logged in users will require authentication."
+                throw new UnauthorizedException("Authentication is required to view public quizzes.");
+            }
+            // Authenticated users can access public quizzes.
+        } else {
+            // Should not happen if visibility is strictly 0 or 1
+            throw new IllegalStateException("Quiz visibility is not set correctly.");
+        }
+
         return ResponseEntity.ok(quizDTO);
     }
 
