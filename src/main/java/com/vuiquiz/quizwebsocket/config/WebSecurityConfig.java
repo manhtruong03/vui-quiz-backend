@@ -87,6 +87,7 @@ public class WebSecurityConfig {
                                 .requestMatchers("/api/upload-test-image").permitAll()
                                 .requestMatchers("/api/admin/users/**").hasRole("ADMIN")
                                 .requestMatchers("/api/admin/images/**").hasRole("ADMIN")
+                                .requestMatchers("/api/admin/tags/**").hasRole("ADMIN")
                                 .anyRequest().authenticated()
                 );
 

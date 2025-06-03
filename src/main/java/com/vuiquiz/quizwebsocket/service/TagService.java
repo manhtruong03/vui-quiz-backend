@@ -1,5 +1,8 @@
 package com.vuiquiz.quizwebsocket.service;
 
+import com.vuiquiz.quizwebsocket.dto.TagAdminViewDTO;
+import com.vuiquiz.quizwebsocket.dto.TagCreationRequestDTO;
+import com.vuiquiz.quizwebsocket.dto.TagUpdateRequestDTO;
 import com.vuiquiz.quizwebsocket.model.Tag;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -17,4 +20,9 @@ public interface TagService {
     List<Tag> searchTagsByName(String namePart);
     Tag updateTag(UUID tagId, Tag tagDetails);
     void deleteTag(UUID tagId); // Soft delete
+
+    TagAdminViewDTO adminCreateTag(TagCreationRequestDTO creationRequest);
+    Page<TagAdminViewDTO> adminGetAllTags(Pageable pageable);
+    TagAdminViewDTO adminGetTagById(UUID tagId);
+    TagAdminViewDTO adminUpdateTag(UUID tagId, TagUpdateRequestDTO updateRequest);
 }

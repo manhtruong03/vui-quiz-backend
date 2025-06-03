@@ -1,5 +1,8 @@
 package com.vuiquiz.quizwebsocket.service.impl;
 
+import com.vuiquiz.quizwebsocket.dto.TagAdminViewDTO;
+import com.vuiquiz.quizwebsocket.dto.TagCreationRequestDTO;
+import com.vuiquiz.quizwebsocket.dto.TagUpdateRequestDTO;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
 import com.vuiquiz.quizwebsocket.model.Tag;
 import com.vuiquiz.quizwebsocket.repository.TagRepository;
@@ -9,8 +12,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -19,6 +24,21 @@ import java.util.UUID;
 public class TagServiceImpl implements TagService {
 
     private final TagRepository tagRepository;
+
+    // Helper method to map Tag entity to TagAdminViewDTO
+    private TagAdminViewDTO mapTagToTagAdminViewDTO(Tag tag) {
+        if (tag == null) {
+            return null;
+        }
+        return TagAdminViewDTO.builder()
+                .tagId(tag.getTagId())
+                .name(tag.getName())
+                .description(tag.getDescription())
+                .createdAt(tag.getCreatedAt())
+                .updatedAt(tag.getUpdatedAt())
+                .build();
+    }
+
 
     @Override
     @Transactional
@@ -100,5 +120,73 @@ public class TagServiceImpl implements TagService {
         // depending on DB constraints or desired behavior. Add logic here if needed.
         // e.g., quizTagRepository.deleteByTagId(tagId);
         tagRepository.delete(tag);
+    }
+
+    @Override
+    @Transactional
+    public TagAdminViewDTO adminCreateTag(TagCreationRequestDTO creationRequest) {
+        // Normalize and validate name
+        String tagName = creationRequest.getName().trim();
+        if (tagRepository.findByName(tagName).isPresent()) {
+            throw new IllegalArgumentException("Error: Tag name '" + tagName + "' already exists.");
+        }
+
+        Tag newTag = Tag.builder()
+                .name(tagName)
+                .description(creationRequest.getDescription())
+                .build();
+        // @PrePersist in Tag entity handles createdAt and updatedAt
+        Tag savedTag = tagRepository.save(newTag);
+        return mapTagToTagAdminViewDTO(savedTag);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<TagAdminViewDTO> adminGetAllTags(Pageable pageable) {
+        Page<Tag> tagPage = tagRepository.findAll(pageable); // This already respects @Where(clause = "deleted_at IS NULL")
+        return tagPage.map(this::mapTagToTagAdminViewDTO);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public TagAdminViewDTO adminGetTagById(UUID tagId) {
+        Tag tag = tagRepository.findById(tagId) // Respects @Where for soft delete
+                .orElseThrow(() -> new ResourceNotFoundException("Tag", "id", tagId));
+        return mapTagToTagAdminViewDTO(tag);
+    }
+
+    @Override
+    @Transactional
+    public TagAdminViewDTO adminUpdateTag(UUID tagId, TagUpdateRequestDTO updateRequest) {
+        Tag existingTag = tagRepository.findById(tagId)
+                .orElseThrow(() -> new ResourceNotFoundException("Tag", "id", tagId));
+
+        boolean updated = false;
+
+        if (StringUtils.hasText(updateRequest.getName())) {
+            String newName = updateRequest.getName().trim();
+            if (!newName.equalsIgnoreCase(existingTag.getName())) { // Case-insensitive check for changes
+                Optional<Tag> tagWithNewName = tagRepository.findByName(newName);
+                if (tagWithNewName.isPresent() && !tagWithNewName.get().getTagId().equals(tagId)) {
+                    throw new IllegalArgumentException("Error: Tag name '" + newName + "' already exists.");
+                }
+                existingTag.setName(newName);
+                updated = true;
+            }
+        }
+
+        if (updateRequest.getDescription() != null) { // Allow setting description to empty or null
+            if (!Objects.equals(updateRequest.getDescription(), existingTag.getDescription())) {
+                existingTag.setDescription(StringUtils.hasText(updateRequest.getDescription()) ? updateRequest.getDescription() : null);
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            // @PreUpdate in Tag entity handles updatedAt
+            Tag savedTag = tagRepository.save(existingTag);
+            return mapTagToTagAdminViewDTO(savedTag);
+        }
+        return mapTagToTagAdminViewDTO(existingTag); // No changes, return current state
     }
 }
