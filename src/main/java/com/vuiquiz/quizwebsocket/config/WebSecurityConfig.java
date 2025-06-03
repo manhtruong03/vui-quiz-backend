@@ -85,6 +85,7 @@ public class WebSecurityConfig {
                                 .requestMatchers(SWAGGER_WHITELIST).permitAll()
                                 .requestMatchers("/files/images/**").permitAll()
                                 .requestMatchers("/api/upload-test-image").permitAll()
+                                .requestMatchers("/api/admin/users/**").hasRole("ADMIN")
                                 .anyRequest().authenticated()
                 );
 

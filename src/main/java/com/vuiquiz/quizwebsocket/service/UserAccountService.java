@@ -1,5 +1,8 @@
 package com.vuiquiz.quizwebsocket.service;
 
+import com.vuiquiz.quizwebsocket.dto.UserAccountAdminViewDTO;
+import com.vuiquiz.quizwebsocket.dto.UserAccountCreationRequestDTO;
+import com.vuiquiz.quizwebsocket.dto.UserAccountUpdateRequestDTO;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
 import com.vuiquiz.quizwebsocket.model.UserAccount;
 import org.springframework.data.domain.Page;
@@ -38,4 +41,40 @@ public interface UserAccountService {
      * @throws IllegalArgumentException if updating would result in negative storageUsed.
      */
     UserAccount updateUserStorageUsed(UUID userId, long fileSizeDelta);
+
+    /**
+     * Creates a new user account by an administrator.
+     * @param creationRequest DTO containing new user details.
+     * @return UserAccountAdminViewDTO of the created user.
+     * @throws IllegalArgumentException if username/email already exists or role is invalid.
+     */
+    UserAccountAdminViewDTO createUserByAdmin(UserAccountCreationRequestDTO creationRequest);
+
+    /**
+     * Updates an existing user account by an administrator.
+     * Only non-null fields in the updateRequest will be considered for update.
+     * @param userId The UUID of the user to update.
+     * @param updateRequest DTO containing the fields to update.
+     * @return UserAccountAdminViewDTO of the updated user.
+     * @throws ResourceNotFoundException if the user is not found.
+     * @throws IllegalArgumentException if new username/email conflicts with an existing one, or role is invalid.
+     */
+    UserAccountAdminViewDTO updateUserByAdmin(UUID userId, UserAccountUpdateRequestDTO updateRequest);
+
+    /**
+     * Sets or resets a user's password by an administrator.
+     * The new password will be encoded before being saved.
+     * @param userId The UUID of the user whose password is to be changed.
+     * @param newPassword The new plain text password.
+     * @throws ResourceNotFoundException if the user is not found.
+     */
+    void adminSetUserPassword(UUID userId, String newPassword);
+
+    /**
+     * Soft deletes a user account by an administrator.
+     * The user account will be marked as deleted and will not be retrievable by standard queries.
+     * @param userId The UUID of the user to soft delete.
+     * @throws ResourceNotFoundException if the user is not found (or already soft-deleted).
+     */
+    void deleteUserByAdmin(UUID userId);
 }

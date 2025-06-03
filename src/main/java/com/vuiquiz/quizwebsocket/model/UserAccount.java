@@ -44,7 +44,7 @@ public class UserAccount {
 
     @Column(name = "role", nullable = false, length = 50)
     @Builder.Default // Add this annotation
-    private String role = "TEACHER";
+    private String role = "USER";
 
     @Column(name = "storage_used", nullable = false)
     @Builder.Default // Add this annotation
