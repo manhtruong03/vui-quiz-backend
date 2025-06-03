@@ -1,5 +1,7 @@
 package com.vuiquiz.quizwebsocket.service;
 
+import com.vuiquiz.quizwebsocket.dto.ImageStorageAdminViewDTO;
+import com.vuiquiz.quizwebsocket.dto.ImageStorageUpdateDTO;
 import com.vuiquiz.quizwebsocket.exception.FileStorageException;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
 import com.vuiquiz.quizwebsocket.model.ImageStorage;
@@ -68,4 +70,44 @@ public interface ImageStorageService {
      * @throws FileStorageException if an error occurs during physical file deletion.
      */
     long deleteImageStorageAndFile(UUID imageId);
+
+    /**
+     * Retrieves a paginated list of all image records, mapped to ImageStorageAdminViewDTO.
+     *
+     * @param pageable Pagination and sorting information.
+     * @return A page of ImageStorageAdminViewDTOs.
+     */
+    Page<ImageStorageAdminViewDTO> getAllImageRecords(Pageable pageable);
+
+    /**
+     * Retrieves details of a specific image record by its ID, mapped to ImageStorageAdminViewDTO.
+     *
+     * @param imageId The UUID of the image record.
+     * @return An Optional containing the ImageStorageAdminViewDTO if found, or an empty Optional otherwise.
+     */
+    Optional<ImageStorageAdminViewDTO> getImageRecordById(UUID imageId);
+
+    /**
+     * Stores an image file, creates its record in the database, and returns its admin view DTO.
+     *
+     * @param originalFile The uploaded MultipartFile.
+     * @param storedFilename The unique filename under which the file is stored on the server.
+     * @param creatorId The ID of the user who is credited for the upload.
+     * @return ImageStorageAdminViewDTO of the created image record.
+     */
+    ImageStorageAdminViewDTO createImageRecordAndGetDTO(MultipartFile originalFile, String storedFilename, UUID creatorId);
+
+    // (Existing method signatures from previous phases)
+
+    /**
+     * Updates the metadata of an existing image record.
+     * Currently supports updating the original filename.
+     *
+     * @param imageId The UUID of the image record to update.
+     * @param updateDTO DTO containing the metadata fields to update.
+     * @return ImageStorageAdminViewDTO of the updated image record.
+     * @throws ResourceNotFoundException if the image record is not found.
+     * @throws IllegalArgumentException if update parameters are invalid.
+     */
+    ImageStorageAdminViewDTO updateImageMetadata(UUID imageId, ImageStorageUpdateDTO updateDTO);
 }

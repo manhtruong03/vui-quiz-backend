@@ -1,10 +1,14 @@
 package com.vuiquiz.quizwebsocket.service.impl;
 
+import com.vuiquiz.quizwebsocket.dto.ImageStorageAdminViewDTO;
+import com.vuiquiz.quizwebsocket.dto.ImageStorageUpdateDTO;
 import com.vuiquiz.quizwebsocket.exception.FileStorageException;
 import com.vuiquiz.quizwebsocket.exception.MyFileNotFoundException;
 import com.vuiquiz.quizwebsocket.exception.ResourceNotFoundException;
 import com.vuiquiz.quizwebsocket.model.ImageStorage;
+import com.vuiquiz.quizwebsocket.model.UserAccount;
 import com.vuiquiz.quizwebsocket.repository.ImageStorageRepository;
+import com.vuiquiz.quizwebsocket.repository.UserAccountRepository;
 import com.vuiquiz.quizwebsocket.service.FileStorageService;
 import com.vuiquiz.quizwebsocket.service.ImageStorageService;
 import lombok.extern.slf4j.Slf4j;
@@ -28,11 +32,13 @@ public class ImageStorageServiceImpl implements ImageStorageService {
 
     private final ImageStorageRepository imageStorageRepository;
     private final FileStorageService fileStorageService;
+    private final UserAccountRepository userAccountRepository;
 
     @Autowired
-    public ImageStorageServiceImpl(ImageStorageRepository imageStorageRepository, FileStorageService fileStorageService) {
+    public ImageStorageServiceImpl(ImageStorageRepository imageStorageRepository, FileStorageService fileStorageService, UserAccountRepository userAccountRepository) {
         this.imageStorageRepository = imageStorageRepository;
         this.fileStorageService = fileStorageService;
+        this.userAccountRepository = userAccountRepository;
     }
 
     @Override
@@ -247,5 +253,95 @@ public class ImageStorageServiceImpl implements ImageStorageService {
         return imageStorageRepository.findById(imageId)
                 .map(this::getPublicUrl) // Calls the existing getPublicUrl(ImageStorage imageStorage)
                 .orElse(null);
+    }
+
+    // Helper method to map ImageStorage entity to ImageStorageAdminViewDTO
+    private ImageStorageAdminViewDTO mapEntityToAdminViewDTO(ImageStorage entity) {
+        if (entity == null) {
+            return null;
+        }
+
+        String creatorUsername = null;
+        if (entity.getCreatorId() != null) {
+            creatorUsername = userAccountRepository.findById(entity.getCreatorId())
+                    .map(UserAccount::getUsername)
+                    .orElse("N/A"); // Or null, depending on how you want to handle missing creators
+        }
+
+        return ImageStorageAdminViewDTO.builder()
+                .imageId(entity.getImageId())
+                .originalFileName(entity.getFileName())
+                .storedFileName(entity.getFilePath())
+                .publicUrl(getPublicUrl(entity.getFilePath())) // Use existing method
+                .contentType(entity.getContentType())
+                .fileSize(entity.getFileSize())
+                .creatorId(entity.getCreatorId())
+                .creatorUsername(creatorUsername)
+                .createdAt(entity.getCreatedAt())
+                .updatedAt(entity.getUpdatedAt())
+                .build();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<ImageStorageAdminViewDTO> getAllImageRecords(Pageable pageable) {
+        Page<ImageStorage> imagePage = imageStorageRepository.findAll(pageable);
+        return imagePage.map(this::mapEntityToAdminViewDTO);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<ImageStorageAdminViewDTO> getImageRecordById(UUID imageId) {
+        return imageStorageRepository.findById(imageId)
+                .map(this::mapEntityToAdminViewDTO);
+    }
+
+    @Override
+    @Transactional // Ensure this operation is transactional
+    public ImageStorageAdminViewDTO createImageRecordAndGetDTO(MultipartFile originalFile, String storedFilename, UUID creatorId) {
+        // createImageRecord is the existing method that saves the ImageStorage entity
+        ImageStorage imageRecord = this.createImageRecord(originalFile, storedFilename, creatorId);
+        // mapEntityToAdminViewDTO is the helper method created in Phase 1
+        return this.mapEntityToAdminViewDTO(imageRecord);
+    }
+
+    @Override
+    @Transactional // Ensure the operation is transactional
+    public ImageStorageAdminViewDTO updateImageMetadata(UUID imageId, ImageStorageUpdateDTO updateDTO) {
+        ImageStorage existingImage = imageStorageRepository.findById(imageId)
+                .orElseThrow(() -> new ResourceNotFoundException("ImageStorage", "id", imageId));
+
+        boolean updated = false;
+
+        // Update originalFileName if provided and not blank
+        if (updateDTO.getOriginalFileName() != null) {
+            String newOriginalFileName = updateDTO.getOriginalFileName().trim();
+            if (!newOriginalFileName.isEmpty() && !newOriginalFileName.equals(existingImage.getFileName())) {
+                if (newOriginalFileName.length() > 255) { // Basic validation, can be enhanced
+                    throw new IllegalArgumentException("Original filename cannot exceed 255 characters.");
+                }
+                existingImage.setFileName(newOriginalFileName);
+                updated = true;
+                log.info("Updating originalFileName for imageId {} to '{}'", imageId, newOriginalFileName);
+            } else if (newOriginalFileName.isEmpty() && updateDTO.getOriginalFileName() != null) {
+                // Explicitly trying to set to empty string - decide if this is allowed or should be an error/no-op
+                // For now, let's treat it as a no-op if the intent was to clear via empty string but originalFileName was already set.
+                // If you want to allow clearing to null, the DTO field would need to explicitly allow null and DB schema too.
+                log.info("Attempt to set originalFileName to empty for imageId {}, originalFileName in DTO was present but empty. No change made.", imageId);
+
+            }
+        }
+        // Add logic for other updatable fields here in the future
+        // e.g., if (updateDTO.getAltText() != null) { ... }
+
+        if (updated) {
+            // The @PreUpdate annotation on ImageStorage entity will automatically update 'updatedAt'
+            ImageStorage savedImage = imageStorageRepository.save(existingImage);
+            log.info("Image metadata updated for imageId: {}", imageId);
+            return mapEntityToAdminViewDTO(savedImage); // Reuse helper from Phase 1
+        } else {
+            log.info("No metadata changes applied for imageId: {}. Returning current state.", imageId);
+            return mapEntityToAdminViewDTO(existingImage); // Return current state if no changes were made
+        }
     }
 }
