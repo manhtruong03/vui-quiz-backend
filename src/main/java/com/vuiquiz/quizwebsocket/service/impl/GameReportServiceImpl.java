@@ -283,18 +283,25 @@ public class GameReportServiceImpl implements GameReportService {
             }
         }
 
-        String title = originalQuestionData != null && originalQuestionData.getTitle() != null ? originalQuestionData.getTitle() : "N/A (Content Slide or Missing Title)";
+        String title = (originalQuestionData != null && originalQuestionData.getTitle() != null) ? originalQuestionData.getTitle() : "N/A (Content Slide or Missing Title)";
+        String description = (originalQuestionData != null) ? originalQuestionData.getDescription() : null;
+        Integer timeLimit = (originalQuestionData != null) ? originalQuestionData.getTime() : null;
+        Integer pointsMultiplier = (originalQuestionData != null) ? originalQuestionData.getPointsMultiplier() : null;
+        List<String> media = (originalQuestionData != null) ? originalQuestionData.getMedia() : null;
+
+
         String effectiveSlideTypeForDisplay = parseQuestionTypeFromDistributionJson(slide.getQuestionDistributionJson());
         if (!StringUtils.hasText(effectiveSlideTypeForDisplay)) {
             effectiveSlideTypeForDisplay = slide.getSlideType();
         }
 
-        List<ChoiceDTO> originalChoices = originalQuestionData != null && originalQuestionData.getChoices() != null ? originalQuestionData.getChoices() : Collections.emptyList();
-        String imageUrl = originalQuestionData != null ? originalQuestionData.getImage() : null;
-        com.vuiquiz.quizwebsocket.dto.VideoDetailDTO videoDetail = originalQuestionData != null ? originalQuestionData.getVideo() : null;
+        List<ChoiceDTO> originalChoices = (originalQuestionData != null && originalQuestionData.getChoices() != null) ? originalQuestionData.getChoices() : Collections.emptyList();
+        String imageUrl = (originalQuestionData != null) ? originalQuestionData.getImage() : null;
+        com.vuiquiz.quizwebsocket.dto.VideoDetailDTO videoDetail = (originalQuestionData != null) ? originalQuestionData.getVideo() : null;
 
         long totalAnswersSubmitted = answersForThisSlide.size();
-        long totalAnsweredControllers = answersForThisSlide.stream().map(PlayerAnswer::getPlayerId).distinct().count();
+        long timeoutCount = answersForThisSlide.stream().filter(a -> "TIMEOUT".equalsIgnoreCase(a.getStatus())).count();
+        long totalAnsweredControllers = answersForThisSlide.stream().map(PlayerAnswer::getPlayerId).distinct().count() - timeoutCount;
 
         Double questionAccuracy = null;
         Double averageTimeVal = null;
@@ -312,13 +319,12 @@ public class GameReportServiceImpl implements GameReportService {
                     .average();
             if (avgTimeOpt.isPresent()) {
                 averageTimeVal = avgTimeOpt.getAsDouble();
-            } else if (validAnswersForAccuracy > 0) {
+            } else if (validAnswersForAccuracy > 0) { // if there were answers, but none with reaction time (unlikely but possible)
                 averageTimeVal = 0.0;
             }
         }
 
         List<AnswerDistributionDto> answerDistributionList = new ArrayList<>();
-        // Populate distribution for gradable questions OR survey questions with choices
         boolean shouldPopulateDistribution = (isGradableQuestionSlide(slide) || "SURVEY".equalsIgnoreCase(effectiveSlideTypeForDisplay)) && !CollectionUtils.isEmpty(originalChoices);
 
         if (shouldPopulateDistribution) {
@@ -329,8 +335,8 @@ public class GameReportServiceImpl implements GameReportService {
                         .filter(pa -> playerChoseOption(pa.getChoice(), choiceIdx, objectMapper, slide.getSlideId()))
                         .count();
 
-                String choiceStatus = "SURVEY_OPTION"; // Default for survey
-                if (isGradableQuestionSlide(slide)) { // Override for gradable
+                String choiceStatus = "SURVEY_OPTION";
+                if (isGradableQuestionSlide(slide)) {
                     choiceStatus = choiceDto.getCorrect() != null && choiceDto.getCorrect() ? "CORRECT" : "WRONG";
                 }
 
@@ -342,26 +348,28 @@ public class GameReportServiceImpl implements GameReportService {
                         .build());
             }
         }
-        // Add TIMEOUT to distribution only for gradable/survey questions that expect an answer
-        if(isGradableQuestionSlide(slide) || "SURVEY".equalsIgnoreCase(effectiveSlideTypeForDisplay)){
-            long timeoutCount = answersForThisSlide.stream().filter(a -> "TIMEOUT".equalsIgnoreCase(a.getStatus())).count();
-            if (timeoutCount > 0) {
-                answerDistributionList.add(AnswerDistributionDto.builder()
-                        .choiceIndex(-3)
-                        .answerText("Timeout")
-                        .status("TIMEOUT")
-                        .count((int) timeoutCount)
-                        .build());
-            }
-        }
+//        if(isGradableQuestionSlide(slide) || "SURVEY".equalsIgnoreCase(effectiveSlideTypeForDisplay)){
+//            if (timeoutCount > 0) {
+//                answerDistributionList.add(AnswerDistributionDto.builder()
+//                        .choiceIndex(-3)
+//                        .answerText("Timeout")
+//                        .status("TIMEOUT")
+//                        .count((int) timeoutCount)
+//                        .build());
+//            }
+//        }
 
         return QuestionReportItemDto.builder()
                 .slideIndex(slide.getSlideIndex())
                 .title(title)
                 .type(effectiveSlideTypeForDisplay)
+                .description(description)
+                .time(timeLimit)
+                .pointsMultiplier(pointsMultiplier)
                 .choices(originalChoices)
                 .imageUrl(imageUrl)
                 .video(videoDetail)
+                .media(media)
                 .totalAnswers((int) totalAnswersSubmitted)
                 .totalAnsweredControllers((int) totalAnsweredControllers)
                 .averageAccuracy(questionAccuracy)

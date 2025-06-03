@@ -74,6 +74,9 @@ public class QuizDTO {
     @Schema(description = "The number of questions in this quiz. Populated by the backend.", example = "10")
     private Integer questionCount;
 
+    @Schema(description = "Number of times the quiz has been played. Populated by backend.", example = "150")
+    private Integer playCount;
+
     // --- Fields primarily for response, populated by backend ---
     @Schema(description = "Server-side validation flag (populated by backend for responses)", example = "true")
     private Boolean isValid;

@@ -59,7 +59,7 @@ public class Quiz {
 
     @Column(name = "status", nullable = false, length = 50) // e.g., DRAFT, PUBLISHED
     @Builder.Default
-    private String status = "DRAFT";
+    private String status = "PUBLISHED";
 
     @Column(name = "visibility", nullable = false) // e.g., 0 for private, 1 for public
     @Builder.Default
@@ -89,16 +89,11 @@ public class Quiz {
     protected void onCreate() {
         createdAt = OffsetDateTime.now();
         modifiedAt = OffsetDateTime.now();
-        if (this.status == null) this.status = "DRAFT";
+        if (this.status == null) this.status = "PUBLISHED";
         if (this.visibility == null) this.visibility = 0; // Default to private
         if (this.playCount == null) this.playCount = 0;
         if (this.favoriteCount == null) this.favoriteCount = 0;
         if (this.questionCount == null) this.questionCount = 0;
         // countdownTimer will use its @Builder.Default or be set explicitly
-    }
-
-    @PreUpdate
-    protected void onUpdate() {
-        modifiedAt = OffsetDateTime.now();
     }
 }

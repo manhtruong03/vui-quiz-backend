@@ -27,6 +27,15 @@ public class QuestionReportItemDto {
     @Schema(description = "Type of the question (e.g., 'quiz', 'jumble').", example = "quiz")
     private String type; // from GameSlide.questionDistributionJson.type or GameSlide.slideType
 
+    @Schema(description = "Description of the question/slide, if available (e.g., for content slides).", nullable = true)
+    private String description;
+
+    @Schema(description = "Time limit for the question in milliseconds. Null if not applicable.", example = "30000", nullable = true)
+    private Integer time;
+
+    @Schema(description = "Points multiplier for the question. Null if not applicable.", example = "1", nullable = true)
+    private Integer pointsMultiplier;
+
     @Schema(description = "Original choices presented to the player for this question.")
     private List<ChoiceDTO> choices; // from GameSlide.questionDistributionJson.choices
 
@@ -35,6 +44,9 @@ public class QuestionReportItemDto {
 
     @Schema(description = "Video details if any was associated with the question.", nullable = true)
     private VideoDetailDTO video; // from GameSlide.questionDistributionJson.video
+
+    @Schema(description = "Array of additional media elements (e.g., URLs or structured objects).", nullable = true)
+    private List<String> media;
 
     // --- Report Data (Calculated from PlayerAnswers) ---
     @Schema(description = "Total number of answers submitted for this question.", example = "29")

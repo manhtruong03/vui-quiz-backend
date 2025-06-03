@@ -27,6 +27,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -416,17 +417,17 @@ public class QuizServiceImpl implements QuizService {
                 .status(quiz.getStatus())
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
+                .playCount(quiz.getPlayCount())
                 .cover(coverImageUrl)
                 .tags(tagNames)
                 .created(quiz.getCreatedAt() != null ? quiz.getCreatedAt().toInstant().toEpochMilli() : null)
                 .modified(quiz.getModifiedAt() != null ? quiz.getModifiedAt().toInstant().toEpochMilli() : null)
-                .questions(Collections.emptyList()) // For list DTO, questions are not detailed
-                .isValid(true) // Assuming valid if fetched
-                .totalQuizTimeLimitMs(totalTimeLimitMs) // Set the new field
+                .questions(Collections.emptyList())
+                .isValid(true)
+                .totalQuizTimeLimitMs(totalTimeLimitMs)
                 .build();
     }
 
-    // Main mapper method, now with a flag to load questions
     private QuizDTO mapQuizEntityToDto(Quiz quiz, String creatorUsername,
                                        boolean loadQuestions, List<String> tagNames,
                                        boolean calculateTotalTimeLimit) {
@@ -442,6 +443,7 @@ public class QuizServiceImpl implements QuizService {
                 .status(quiz.getStatus())
                 .quizType(quiz.getQuizTypeInfo())
                 .questionCount(quiz.getQuestionCount())
+                .playCount(quiz.getPlayCount())
                 .isValid(true)
                 .tags(tagNames);
 
@@ -582,7 +584,29 @@ public class QuizServiceImpl implements QuizService {
         existingQuiz.setTitle(quizDetails.getTitle());
         existingQuiz.setDescription(quizDetails.getDescription());
         // ... copy other relevant fields from quizDetails to existingQuiz ...
+        // Manually set modifiedAt before saving
+        existingQuiz.setModifiedAt(OffsetDateTime.now());
         return quizRepository.save(existingQuiz);
+    }
+
+    @Override
+    @Transactional
+    public Quiz updateQuizStatus(UUID quizId, String newStatus) {
+        Quiz quiz = getQuizById_Original(quizId);
+        quiz.setStatus(newStatus);
+        // Manually set modifiedAt before saving
+        quiz.setModifiedAt(OffsetDateTime.now());
+        return quizRepository.save(quiz);
+    }
+
+    @Override
+    @Transactional
+    public Quiz updateQuizVisibility(UUID quizId, Integer newVisibility) {
+        Quiz quiz = getQuizById_Original(quizId);
+        quiz.setVisibility(newVisibility);
+        // Manually set modifiedAt before saving
+        quiz.setModifiedAt(OffsetDateTime.now());
+        return quizRepository.save(quiz);
     }
 
     @Override
@@ -646,21 +670,5 @@ public class QuizServiceImpl implements QuizService {
             }
         }
         log.info("Quiz {} and its associated images deleted successfully. Freed space: {} bytes for user {}", quizId, totalFreedSpace, creatorId);
-    }
-
-    @Override
-    @Transactional
-    public Quiz updateQuizStatus(UUID quizId, String newStatus) {
-        Quiz quiz = getQuizById_Original(quizId);
-        quiz.setStatus(newStatus);
-        return quizRepository.save(quiz);
-    }
-
-    @Override
-    @Transactional
-    public Quiz updateQuizVisibility(UUID quizId, Integer newVisibility) {
-        Quiz quiz = getQuizById_Original(quizId);
-        quiz.setVisibility(newVisibility);
-        return quizRepository.save(quiz);
     }
 }
