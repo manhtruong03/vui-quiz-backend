@@ -220,11 +220,22 @@ public class ImageStorageServiceImpl implements ImageStorageService {
         if (!StringUtils.hasText(storedFilename)) {
             return null;
         }
-        // Ensure no leading slashes if storedFilename is just the name
+
+        // Convert to lowercase for a case-insensitive check for "http://" or "https://"
+        String lowerCaseStoredFilename = storedFilename.toLowerCase();
+
+        // Check if the storedFilename is already an absolute URL
+        if (lowerCaseStoredFilename.startsWith("http://") || lowerCaseStoredFilename.startsWith("https://")) {
+            return storedFilename; // It's already a full URL, return it as is.
+        }
+
+        // Otherwise, assume it's a local file and construct the URL
+        // Ensure no leading slashes if storedFilename is just the name intended for local path construction
         String cleanStoredFilename = storedFilename.startsWith("/") ? storedFilename.substring(1) : storedFilename;
+
         return ServletUriComponentsBuilder.fromCurrentContextPath()
                 .path("/files/images/") // Matches FileController endpoint
-                .path(cleanStoredFilename)
+                .path(cleanStoredFilename) // cleanStoredFilename should be just the filename like "uuid.jpg"
                 .toUriString();
     }
 

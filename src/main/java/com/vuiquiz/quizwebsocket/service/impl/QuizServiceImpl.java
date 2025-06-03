@@ -325,7 +325,11 @@ public class QuizServiceImpl implements QuizService {
         // 4. Map Quiz entities to QuizDTOs
         List<QuizDTO> quizDTOs = quizzes.stream()
                 .map(quiz -> {
-                    String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
+                    String coverFilePath = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
+                    String fullCoverUrl = null;
+                    if (StringUtils.hasText(coverFilePath)) { // Check if filePath is not null or empty
+                        fullCoverUrl = imageStorageService.getPublicUrl(coverFilePath); // Construct full URL
+                    }
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
 
                     // --- TWEAK 2: Calculate total time limit ---
@@ -336,7 +340,7 @@ public class QuizServiceImpl implements QuizService {
                             .sum();
                     // --- END TWEAK 2 CALCULATION ---
 
-                    return mapQuizEntityToListDTO(quiz, currentUsername, coverImageUrl, tagNames, totalTimeLimitMs);
+                    return mapQuizEntityToListDTO(quiz, currentUsername, fullCoverUrl, tagNames, totalTimeLimitMs); // Pass the full URL
                 })
                 .collect(Collectors.toList());
 
@@ -381,14 +385,18 @@ public class QuizServiceImpl implements QuizService {
         List<QuizDTO> quizDTOs = quizzes.stream()
                 .map(quiz -> {
                     String creatorUsername = creatorUsernameMap.get(quiz.getCreatorId());
-                    String coverImageUrl = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
+                    String coverFilePath = quiz.getCoverImageId() != null ? coverImageUrlMap.get(quiz.getCoverImageId()) : null;
+                    String fullCoverUrl = null;
+                    if (StringUtils.hasText(coverFilePath)) { // Check if filePath is not null or empty
+                        fullCoverUrl = imageStorageService.getPublicUrl(coverFilePath); // Construct full URL
+                    }
                     List<String> tagNames = tagsByQuizIdMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
                     List<Question> quizQuestions = finalQuestionsMap.getOrDefault(quiz.getQuizId(), Collections.emptyList());
                     int totalTimeLimitMs = quizQuestions.stream()
                             .filter(q -> q.getTimeLimit() != null)
                             .mapToInt(Question::getTimeLimit)
                             .sum();
-                    return mapQuizEntityToListDTO(quiz, creatorUsername, coverImageUrl, tagNames, totalTimeLimitMs);
+                    return mapQuizEntityToListDTO(quiz, creatorUsername, fullCoverUrl, tagNames, totalTimeLimitMs); // Pass the full URL
                 })
                 .collect(Collectors.toList());
 
