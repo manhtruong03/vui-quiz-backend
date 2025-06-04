@@ -128,6 +128,7 @@ public class GameReportServiceImpl implements GameReportService {
                 .build();
 
         return SessionSummaryDto.builder()
+                .sessionId(session.getSessionId().toString())
                 .type(session.getGameType())
                 .name(quiz.getTitle())
                 .playerCount(session.getPlayerCount())

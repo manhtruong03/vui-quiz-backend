@@ -16,6 +16,9 @@ import java.util.Map;
 @Schema(description = "Summary report for a completed game session.")
 public class SessionSummaryDto {
 
+    @Schema(description = "UUID of the game session.", example = "a1b2c3d4-e5f6-7890-1234-567890abcdef") // New field
+    private String sessionId;
+
     @Schema(description = "Type of the game session.", example = "LIVE")
     private String type; // From GameSession.gameType
 
